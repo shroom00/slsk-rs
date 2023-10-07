@@ -6,22 +6,26 @@ mod server;
 mod peer_init;
 mod peer;
 mod file;
+mod distributed;
 
 use crate::{packing::UnpackFromBytes, packing::PackToBytes};
 pub(crate) use server::*;
 pub(crate) use peer_init::*;
+pub(crate) use peer::*;
+pub(crate) use file::*;
+pub(crate) use distributed::*;
 use std::{io::Write, net::TcpStream};
 
 pub trait MessageTrait: Sized {
     type ToSend: PackToBytes;
     type ToReceive: UnpackFromBytes;
     const CODE: MessageType;
-    fn to_stream(mut stream: &TcpStream, message: Self::ToSend) -> Result<usize, std::io::Error> {
+    fn to_stream(mut stream: &TcpStream, message: Self::ToSend) -> std::io::Result<()> {
         let mut data: Vec<u8> = vec![0, 0, 0, 0];
         data.extend(Self::CODE.pack_to_bytes());
         data.extend(message.pack_to_bytes());
         data.splice(..4, ((data.len() - 4) as u32).pack_to_bytes());
-        stream.write(&data)
+        stream.write_all(&data)
     }
 
     fn from_stream(stream: &mut Vec<u8>) -> Self::ToReceive
@@ -36,6 +40,9 @@ pub trait MessageTrait: Sized {
 pub enum MessageType {
     Server(u32),
     PeerInit(u8),
+    Peer(u32),
+    File,
+    Distributed(u8),
 }
 
 impl UnpackFromBytes for MessageType {
@@ -51,10 +58,11 @@ impl UnpackFromBytes for MessageType {
         Self: Sized,
     {
         // We only care about the message type so we can gett the right type.
-        // The numeber is unimportant
+        // The number is unimportant
         match self {
-            MessageType::Server(_) => MessageType::Server(<u32>::unpack_from_bytes(bytes)),
-            MessageType::PeerInit(_) => MessageType::PeerInit(<u8>::unpack_from_bytes(bytes)),
+            MessageType::Server(_) | MessageType::Peer(_) => MessageType::Server(<u32>::unpack_from_bytes(bytes)),
+            MessageType::PeerInit(_) | MessageType::Distributed(_) => MessageType::PeerInit(<u8>::unpack_from_bytes(bytes)),
+            MessageType::File => MessageType::File,
         }
     }
 }
@@ -62,8 +70,9 @@ impl UnpackFromBytes for MessageType {
 impl PackToBytes for MessageType {
     fn pack_to_bytes(&self) -> Vec<u8> {
         match self {
-            MessageType::Server(u) => u.pack_to_bytes(),
-            MessageType::PeerInit(u) => vec![u.clone()],
+            MessageType::Server(u) | MessageType::Peer(u) => u.pack_to_bytes(),
+            MessageType::PeerInit(u) | MessageType::Distributed(u) => vec![u.clone()],
+            MessageType::File => vec![],
         }
     }
 }

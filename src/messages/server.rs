@@ -8,7 +8,6 @@ use crate::{
 
 use std::net::Ipv4Addr;
 
-
 pub struct Login;
 
 define_message_to_send!(_SendLogin {
@@ -215,21 +214,22 @@ define_message_to_send!(_SendJoinRoom {
 // May need to rewrite macros if so,
 // so a length check is utilised.
 
+define_message_to_receive!(UserStats {
+    avg_speeds: u32,
+    upload_num: u64, // Is this the same as num_of_files?
+    num_of_files: u32,
+    num_of_dirs: u32,
+});
 #[rustfmt::skip]
 define_message_to_receive!(_ReceiveJoinRoom {
     room: String,
-    num_of_users: u32 { usernames: String ,},
-    num_of_statuses: u32 { statuses: u32 ,},
-    num_of_stats: u32 {
-        avg_speeds: u32,
-        upload_nums: u64,
-        files: u32,
-        dirs: u32,
-    },
-    num_of_slsots_free: u32 { slots_free: u32 ,},
-    num_of_countries: u32 { country_codes: u32 ,},
+    usernames: Vec<String>,
+    statuses: Vec<UserStatusCodes>,
+    stats: Vec<UserStats>,
+    slots_free: Vec<u32>,
+    country_codes: Vec<String>,
     owner: String, // Only exists if room is private? May just be an empty string
-    num_of_operators: u32 { operators: String ,},  // Only exists if room is private?
+    operators: Vec<String>,  // Only exists if room is private?
 }); // num_of_operators may just be 0u32
 
 pub struct JoinRoom;
@@ -407,16 +407,16 @@ define_message_to_send!(_SendRoomList {});
 // This message is a mess, I hate it!
 #[rustfmt::skip]
 define_message_to_receive!(_ReceiveRoomList {
-    num_of_rooms: u32 {rooms: String,},
-    num_of_rooms_dupe: u32 {num_of_users: u32,},
+    rooms: Vec<String>,
+    num_of_users: Vec<u32>,
 
-    num_of_owned_priv_rooms: u32 {owned_priv_rooms: String,},
-    num_of_owned_priv_rooms_dupe: u32 {owned_priv_num_of_users: u32,},
+    owned_priv_rooms: Vec<String>,
+    owned_priv_num_of_users: Vec<u32>,
 
-    num_of_non_owned_priv_rooms: u32 {non_owned_priv_rooms: String,},
-    num_of_non_owned_priv_rooms_dupe: u32 {non_owned_priv_num_of_users: u32,},
+    non_owned_priv_rooms: Vec<String>,
+    non_owned_priv_num_of_users: Vec<u32>,
 
-    num_of_operated_priv_rooms: u32 {operated_priv_rooms: String,},
+    operated_priv_rooms: Vec<String>,
 });
 pub struct RoomList;
 impl_message_trait!(
@@ -435,7 +435,7 @@ impl_message_trait!(
 
 #[rustfmt::skip]
 define_message_to_receive!(PrivilegedUsers {
-    num_of_users: u32 {usernames: String,},
+    usernames: Vec<String>,
 });
 impl_message_trait!(
     PrivilegedUsers < IsntSent,
@@ -501,7 +501,7 @@ impl_message_trait!(
 
 #[rustfmt::skip]
 define_message_to_receive!(PossibleParents {
-    num_of_parents: u32 {usernames: String,},
+    usernames: Vec<String>,
 });
 impl_message_trait!(
     PossibleParents < IsntSent,
@@ -531,12 +531,13 @@ impl_message_trait!(
 // 111: ItemRecommendations
 // 112: ItemSimilarUsers
 
+define_message_to_receive!(Ticker {
+    username: String,
+    ticker: String,
+});
 define_message_to_receive!(RoomTickerState {
     room: String,
-    num_of_users: u32 {
-        usernames: String,
-        tickers: String,
-    },
+    tickers: Vec<Ticker>,
 });
 impl_message_trait!(
     RoomTickerState < IsntSent,
@@ -636,7 +637,7 @@ impl_message_trait!(
 #[rustfmt::skip]
 define_message_to_receive!(PrivateRoomUsers {
     room: String,
-    num_of_users: u32 {users: String,},
+    users: Vec<String>,
 });
 impl_message_trait!(
     PrivateRoomUsers < IsntSent,
@@ -754,7 +755,7 @@ impl_message_trait!(
 #[rustfmt::skip]
 define_message_to_receive!(PrivateRoomOwned {
     room: String,
-    num_of_operators: u32 {operators: String,},
+    operators: Vec<String>,
 });
 impl_message_trait!(
     PrivateRoomOwned < IsntSent,
@@ -763,7 +764,7 @@ impl_message_trait!(
 
 #[rustfmt::skip]
 define_message_to_send!(MessageUsers {
-    num_of_users: u32 {usernames: String,},
+    usernames: Vec<String>,
     message: String,
 });
 impl_message_trait!(

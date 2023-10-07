@@ -1,27 +1,169 @@
-mod packing;
 #[allow(dead_code)]
 mod constants;
 mod messages;
+mod packing;
 mod utils;
 
 use crate::messages::*;
 use crate::packing::UnpackFromBytes;
 
 use std::io::Read;
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 use input_macro::input;
+
+/// Prints the messages received from peers.
+// Like the mainloop but for peer instead of server messages
+fn listener_logging(l: TcpListener) {
+    for stream in l.incoming() {
+        let mut stream = stream.unwrap();
+        println!("Connected to peer at {}", stream.local_addr().unwrap());
+
+        let mut length: [u8; 4] = [0, 0, 0, 0];
+        let _ = stream.read_exact(&mut length);
+        let length = u32::from_le_bytes(length);
+        let mut bytes: Vec<u8> = vec![0; length as usize];
+        let _ = stream.read_exact(&mut bytes);
+        let code = MessageType::PeerInit(<u8>::unpack_from_bytes(&mut bytes));
+        println!("Received code from peer: {code:?}");
+        match code {
+            MessageType::PeerInit(0) => {
+                println!(
+                    "from peer: {:?}",
+                    <PierceFireWall>::unpack_from_bytes(&mut bytes)
+                );
+            }
+            MessageType::PeerInit(1) => {
+                println!("from peer: {:?}", <PeerInit>::unpack_from_bytes(&mut bytes));
+            }
+            _ => {
+                println!("received unknown code: {code:?}")
+            }
+        }
+
+        loop {
+            let mut length: [u8; 4] = [0, 0, 0, 0];
+            let _ = stream.read_exact(&mut length);
+            let length = u32::from_le_bytes(length);
+            let mut bytes: Vec<u8> = vec![0; length as usize];
+            let _ = stream.read_exact(&mut bytes);
+            let code = MessageType::Peer(<u32>::unpack_from_bytes(&mut bytes));
+            println!("Received code from peer: {code:?}");
+
+            match code {
+                MessageType::Peer(4) => {
+                    println!(
+                        "from peer: {:?}",
+                        GetSharedFileList::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(5) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(9) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(15) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(16) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(36) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(37) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(40) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(41) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(43) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(44) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(46) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(50) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(51) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                MessageType::Peer(52) => {
+                    println!(
+                        "from peer: {:?}",
+                        SharedFileListResponse::from_stream(&mut bytes)
+                    );
+                }
+                _ => {
+                    println!("Received unknown message: {code:?}");
+                    // Skip the unknown message
+                    let _ = stream.read_exact(&mut vec![0u8; length as usize]);
+                }
+            }
+        }
+    }
+}
 
 fn main() {
     let username = input!("Username: ");
     let password = input!("Password: ");
     let login_info = _SendLogin::new(username.into(), password.into());
-
+    let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+    let my_port: u32 = listener.local_addr().unwrap().port().into();
     let set_port = SetWaitPort {
-        port: 2242,
-        use_obfuscation: false,
+        port: my_port, // 2242,
+        use_obfuscation: false, // Leave this until the actual logic for it is implemented
         obfuscated_port: 0,
     };
+    thread::spawn(|| listener_logging(listener));
 
     if let Ok(mut stream) = TcpStream::connect("server.slsknet.org:2242") {
         println!("Connected to the server!");
@@ -34,7 +176,7 @@ fn main() {
             let mut bytes: Vec<u8> = vec![0; length as usize];
             let _ = stream.read_exact(&mut bytes);
             let code = MessageType::Server(<u32>::unpack_from_bytes(&mut bytes));
-            println!("Received code {code:?}: ");
+            println!("Received code: {code:?}");
             match code {
                 MessageType::Server(1) => {
                     let response = Login::from_stream(&mut bytes);
@@ -75,7 +217,17 @@ fn main() {
                     println!("{:#?}", UserLefRoom::from_stream(&mut bytes));
                 }
                 MessageType::Server(18) => {
-                    println!("{:#?}", ConnectToPeer::from_stream(&mut bytes));
+                    // Ideally, this shouldn't happen if we receive the PeerInit message
+                    // While still testing stuff out it's not the end of the world
+                    // TODO: Handle peer connections appropriately depending on if we have an open port
+                    let connect_req = ConnectToPeer::from_stream(&mut bytes);
+                    println!("{:#?}", connect_req);
+                    let token = connect_req.firewall_token;
+                    let fw = PierceFireWall { token };
+                    let peer =
+                        TcpStream::connect((connect_req.ip, connect_req.port as u16)).unwrap();
+                    print!(" Attempting to connect indirectly to {peer:?}");
+                    let _ = PierceFireWall::to_stream(&peer, fw);
                 }
                 MessageType::Server(22) => {
                     println!("{:#?}", MessageUser::from_stream(&mut bytes));

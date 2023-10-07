@@ -17,9 +17,6 @@ macro_rules! generate_struct {
         pub struct $struct_name {
             $(
                 pub $field_name: $field_type,
-                $($(
-                    pub $iter_name: Vec<$iter_type>,
-                )+)?
             )*
         }
     };

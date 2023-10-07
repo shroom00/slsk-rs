@@ -48,6 +48,11 @@ impl PackToBytes for bool {
         vec![*self as u8]
     }
 }
+impl PackToBytes for u8 {
+    fn pack_to_bytes(&self) -> Vec<u8> {
+        vec![*self]
+    }
+}
 
 impl PackToBytes for String {
     fn pack_to_bytes(&self) -> Vec<u8> {
@@ -59,6 +64,24 @@ impl PackToBytes for String {
     }
 }
 
+impl<T> PackToBytes for Vec<T>
+where
+    T: PackToBytes,
+{
+    fn pack_to_bytes(&self) -> Vec<u8> {
+        let length: u32 = self.len().try_into().unwrap_or(u32::MAX);
+        let mut bytes: Vec<u8> = vec![];
+        bytes.extend(length.pack_to_bytes());
+        let count: u32 = 1;
+        for i in self {
+            bytes.extend(i.pack_to_bytes());
+            if count == u32::MAX {
+                break;
+            }
+        }
+        bytes
+    }
+}
 pub trait UnpackFromBytes: Sized {
     fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self;
     /// Used for when data can only be unpacked based on self
@@ -131,5 +154,19 @@ impl UnpackFromBytes for Ipv4Addr {
     fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
         let combined_octets = u32::unpack_from_bytes(bytes);
         Ipv4Addr::from(combined_octets)
+    }
+}
+
+impl<T> UnpackFromBytes for Vec<T>
+where
+    T: UnpackFromBytes,
+{
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
+        let length = <u32>::unpack_from_bytes(bytes);
+        let mut vec = vec![];
+        for _ in 0..length {
+            vec.push(<T>::unpack_from_bytes(bytes));
+        }
+        vec
     }
 }
