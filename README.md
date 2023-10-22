@@ -2,10 +2,21 @@
 slsk-rs is a TUI based Soulseek client, written in Rust.
 That's the plan anyway.
 <br>
-Currently it just prints the messages received to the terminal but it's a start.
 
 <h2>TODO:</h2>
 <ol>
-    <li>Finish implementing the Peer, File and Distributed Messages.</li>
-    <li>Consult the scrolls (<a href="https://github.com/Nicotine-Plus/nicotine-plus">Nicotine+ source code</a>) for more wisdom. (For understanding of how the backend could/should work)</li>
+    <li>
+        Create the other windows
+        <br>
+        <ul>
+            <li>File search</li>
+            <li>File upload/download</li>
+            <li>Chat rooms</li>
+            <li>Private messages</li>
+            <li>Settings</li>
+        </ul>
+    </li>
+    <li>Create new events and implement the backend for the other windows</li>
+    <li>Store login info to avoid logging in every time you use the client</li>
+    <li>Save chat logs, download logs etc. and load them on startup</li>
 </ol>

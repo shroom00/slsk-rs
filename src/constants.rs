@@ -10,6 +10,12 @@ pub enum UserStatusCodes {
     Online,
 }
 
+impl Default for UserStatusCodes {
+    fn default() -> Self {
+        Self::Offline
+    }
+}
+
 impl UnpackFromBytes for UserStatusCodes {
     fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self
     where
@@ -55,7 +61,7 @@ impl UnpackFromBytes for TransferDirections {
         match u {
             0 => Self::DownloadFromPeer,
             1 => Self::UploadToPeer,
-            _ => todo!()
+            _ => todo!(),
         }
     }
 }
@@ -90,8 +96,9 @@ impl UnpackFromBytes for ConnectionTypes {
             // TODO:
             // Defaults to P2P
             // When forming connections is actually implemented,
-            // should cause the connection to fail/timeout
-            // For now, this seems safe
+            // this should cause the connection to fail/timeout
+            // For now, this seems safe but will need to check
+            // when the backend is properly made
             _ => Self::PeerToPeer,
         }
     }
@@ -109,7 +116,7 @@ pub enum FileAttributeTypes {
     /// Hz
     SampleRate,
     /// Bits
-    BitDepth
+    BitDepth,
 }
 
 impl PackToBytes for FileAttributeTypes {
@@ -125,7 +132,6 @@ impl PackToBytes for FileAttributeTypes {
     }
 }
 
-
 impl UnpackFromBytes for FileAttributeTypes {
     fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self
     where
@@ -139,7 +145,7 @@ impl UnpackFromBytes for FileAttributeTypes {
             3 => Self::Encoder,
             4 => Self::SampleRate,
             5 => Self::BitDepth,
-            _ => todo!()
-}
+            _ => todo!(),
+        }
     }
 }

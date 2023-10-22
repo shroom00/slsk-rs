@@ -210,7 +210,7 @@ define_message_to_send!(_SendJoinRoom {
     private: u32,
 });
 
-// TODO: Check if manual implementation required (for private rooms)
+// TODO: Check if manual implementation is required (for private rooms)
 // May need to rewrite macros if so,
 // so a length check is utilised.
 
@@ -329,7 +329,6 @@ define_message_to_send!(_SendFileSearch {
     search_query: String,
 });
 
-// TODO: Is this received as a response, or is it received at random?
 define_message_to_receive!(_ReceiveFileSearch {
     username: String,
     token: u32,
@@ -608,7 +607,7 @@ impl_message_trait!(
 // TODO:
 // Server Code 124 (NotifyPrivileges), is deprecated but can still be received
 // 125 (AckNotifyPrivileges) is "no longer used" but can technically still be received.
-// Not sure if needs implementing
+// Not sure if it needs implementing
 #[rustfmt::skip]
 define_message_to_send!(BranchLevel {
     branch_level: u32,
