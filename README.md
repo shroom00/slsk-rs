@@ -11,7 +11,6 @@ That's the plan anyway.
         <ul>
             <li>File search</li>
             <li>File upload/download</li>
-            <li>Chat rooms</li>
             <li>Private messages</li>
             <li>Settings</li>
         </ul>

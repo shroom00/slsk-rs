@@ -1,7 +1,7 @@
-use super::{macros::PackToBytes, MessageTrait, MessageType};
+use super::{MessageTrait, MessageType};
 use crate::{
     constants::{FileAttributeTypes, TransferDirections},
-    packing::UnpackFromBytes,
+    packing::{UnpackFromBytes, PackToBytes},
 };
 
 define_message_to_send_and_receive!(GetSharedFileList {});
@@ -56,7 +56,7 @@ impl_message_trait!(
     UserInfoRequest > (MessageType::Peer(15))
 );
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Picture {
     pub picture: Option<String>,
 }

@@ -1,5 +1,8 @@
-use super::{macros::PackToBytes, MessageTrait, MessageType};
-use crate::{constants::ConnectionTypes, packing::UnpackFromBytes};
+use super::{MessageTrait, MessageType};
+use crate::{
+    constants::ConnectionTypes,
+    packing::{PackToBytes, UnpackFromBytes},
+};
 
 #[rustfmt::skip]
 define_message_to_send_and_receive!(PierceFireWall {

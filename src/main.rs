@@ -1,9 +1,12 @@
+#[macro_use]
+mod macros;
 #[allow(dead_code)]
 mod constants;
 mod events;
 mod gui;
 mod messages;
 mod packing;
+mod styles;
 mod utils;
 
 use crate::events::SLSKEvents;
@@ -11,9 +14,9 @@ use crate::messages::*;
 use crate::packing::UnpackFromBytes;
 use crate::utils::keepalive_add_retries;
 
-use smol::block_on;
+use smol::{block_on, Timer};
 use socket2::{SockRef, TcpKeepalive};
-use std::io::Error;
+use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -37,9 +40,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => panic!("{e}"),
     });
+    let mut login_timeout: u64 = 15;
+
+    let mut temp_receiver = read_queue.resubscribe();
 
     loop {
-        let stream = TcpStream::connect("server.slsknet.org:2242").await;
+        let should_quit = async {
+            let mut quit = false;
+            while !quit {
+                let event = temp_receiver.recv().await;
+                quit = match event {
+                    Ok(event) => match event {
+                        SLSKEvents::Quit => true,
+                        _ => false,
+                    },
+                    Err(_) => false,
+                };
+            }
+            quit
+        };
+
+        let stream: Result<TcpStream, Error> = tokio::select! {
+            // Wait for the connection to complete
+            connect_result = TcpStream::connect("server.slsknet.org:2242") => connect_result,
+            // Wait for should_quit to complete
+            quit = should_quit => {
+                if quit {
+                    Err(ErrorKind::Other.into())
+                } else {unimplemented!()}
+            }
+        };
+
+        // panic!("Result: {:?}", stream);
+
+        // println!("trying to connect");
+        // let stream: Result<TcpStream, Error> = TcpStream::connect("server.slsknet.org:2242").await;
         match stream {
             Ok(stream) => {
                 let sock_ref = SockRef::from(&stream);
@@ -65,10 +100,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                     },
-                    Err(_) => todo!(),
+                    Err(_) => unimplemented!(),
                 };
             }
-            Err(e) => panic!("stream fail: {e}"),
+            Err(e) => {
+                let kind = e.kind();
+
+                if kind == ErrorKind::Other {
+                    // If we receive SLSKEvent::Quit from the TUI
+                    break;
+                } else if e.raw_os_error() == Some(11001) {
+                    // If "no such host is known" (Not connected to the internet?)
+                    continue;
+                }
+                println!(
+                    "stream fail: {e}, sleeping for {login_timeout} seconds. {:?}",
+                    e
+                );
+                Timer::after(Duration::from_secs(login_timeout)).await;
+                login_timeout *= 2;
+            }
         };
     }
     Ok(())
@@ -82,6 +133,7 @@ enum SLSKExitCode {
     OtherLogin,
     IoError(Error),
 }
+
 async fn handle_client(
     stream: TcpStream,
     write_queue: Sender<SLSKEvents>,
@@ -115,10 +167,10 @@ async fn handle_client(
             match code {
                 MessageType::Server(1) => {
                     let response = Login::from_stream(&mut bytes);
-                    let _ = write_queue.send(SLSKEvents::LoginResult(
-                        response.success,
-                        response.failure_reason,
-                    ));
+                    let _ = write_queue.send(SLSKEvents::LoginResult {
+                        success: response.success,
+                        reason: response.failure_reason,
+                    });
                     if !response.success {
                         return SLSKExitCode::LoginFail;
                     }
@@ -133,10 +185,24 @@ async fn handle_client(
                     // println!("{:#?}", GetUserStatus::from_stream(&mut bytes));
                 }
                 MessageType::Server(13) => {
-                    // println!("{:#?}", SayChatroom::from_stream(&mut bytes));
+                    let response = SayChatroom::from_stream(&mut bytes);
+                    // println!("{response:#?}");
+                    let _ = write_queue.send(SLSKEvents::ChatroomMessage {
+                        room: response.room,
+                        username: Some(response.username),
+                        message: response.message,
+                    });
                 }
                 MessageType::Server(14) => {
-                    // println!("{:#?}", JoinRoom::from_stream(&mut bytes));
+                    let response = JoinRoom::from_stream(&mut bytes);
+                    let _ = write_queue.send(SLSKEvents::UpdateRoom {
+                        room: response.room,
+                        stats: response
+                            .usernames
+                            .into_iter()
+                            .zip(response.stats)
+                            .collect::<Vec<(String, UserStats)>>(),
+                    });
                 }
                 MessageType::Server(15) => {
                     // println!("{:#?}", LeaveRoom::from_stream(&mut bytes));
@@ -173,7 +239,15 @@ async fn handle_client(
                     return SLSKExitCode::OtherLogin;
                 }
                 MessageType::Server(64) => {
-                    // println!("{:#?}", RoomList::from_stream(&mut bytes));
+                    let room_list = RoomList::from_stream(&mut bytes);
+                    let rooms_and_num_of_users = room_list
+                        .rooms
+                        .into_iter()
+                        .zip(room_list.num_of_users)
+                        .collect();
+                    let _ = write_queue.send(SLSKEvents::RoomList {
+                        rooms_and_num_of_users,
+                    });
                 }
                 MessageType::Server(66) => {
                     // println!("{:#?}", AdminMessage::from_stream(&mut bytes));
@@ -275,8 +349,8 @@ async fn handle_client(
                             let _ = writer.shutdown();
                             return SLSKExitCode::Ok;
                         }
-                        SLSKEvents::LoginResult(result, _reason) => {
-                            if result {
+                        SLSKEvents::LoginResult { success, .. } => {
+                            if success {
                                 let _ = block_on(
                                     SetWaitPort::async_write_to(
                                         &mut writer,
@@ -288,8 +362,38 @@ async fn handle_client(
                                     )
                                     .await,
                                 );
+                                let _ = block_on(
+                                    RoomList::async_write_to(&mut writer, _SendRoomList {}).await,
+                                );
                             }
                         }
+                        SLSKEvents::RoomList { .. } => (),
+                        SLSKEvents::JoinRoom { room, private } => {
+                            let _ = block_on(
+                                JoinRoom::async_write_to(
+                                    &mut writer,
+                                    _SendJoinRoom { room, private },
+                                )
+                                .await,
+                            );
+                        }
+                        SLSKEvents::UpdateRoom { .. } => (),
+                        SLSKEvents::ChatroomMessage {
+                            room,
+                            username,
+                            message,
+                        } => match username {
+                            Some(_) => (),
+                            None => {
+                                let _ = block_on(
+                                    SayChatroom::async_write_to(
+                                        &mut writer,
+                                        _SendSayChatroom { room, message },
+                                    )
+                                    .await,
+                                );
+                            }
+                        },
                     },
                     Err(_) => {
                         *quit_w.lock().await = true;

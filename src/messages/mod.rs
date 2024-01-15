@@ -1,7 +1,3 @@
-/// Contains all the messages sent/received by the client
-
-#[macro_use]
-mod macros;
 mod distributed;
 mod file;
 mod peer;
@@ -57,7 +53,7 @@ pub trait MessageTrait: Sized {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum MessageType {
     Server(u32),
     PeerInit(u8),

@@ -3,7 +3,7 @@ use crate::{packing::PackToBytes, packing::UnpackFromBytes};
 pub(crate) const MAJOR_VERSION: u32 = 160;
 pub(crate) const MINOR_VERSION: u32 = 1;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum UserStatusCodes {
     Offline,
     Away,
@@ -66,7 +66,7 @@ impl UnpackFromBytes for TransferDirections {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ConnectionTypes {
     PeerToPeer,
     FileTransfer,
@@ -104,7 +104,7 @@ impl UnpackFromBytes for ConnectionTypes {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FileAttributeTypes {
     /// Kbps
     Bitrate,

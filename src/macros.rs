@@ -1,6 +1,3 @@
-pub(crate) use super::MessageTrait;
-pub(crate) use crate::packing::PackToBytes;
-
 macro_rules! generate_struct {
     (
         $struct_name:ident {
@@ -13,7 +10,7 @@ macro_rules! generate_struct {
     ) => {
         // Debug isn't always used
         #[allow(dead_code)]
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         pub struct $struct_name {
             $(
                 pub $field_name: $field_type,
@@ -135,5 +132,139 @@ macro_rules! define_message_to_send_and_receive {
         generate_struct!($($tokens)+);
         impl_pack_to_bytes!($($tokens)+);
         impl_unpack_from_stream!($($tokens)+);
+    };
+}
+
+/// Writes code to render widgets and focus them when necessary, to be used when implementing `Widget` for `Window`
+///
+/// Usage is as follows ()
+///
+/// ```
+/// SELF: self,
+/// BUFFER: buffer_area,
+/// 0 = widget => render_area,
+/// 1 = widget2 => render_area2,
+/// ````
+///
+/// This assumes the following:
+///
+/// - `self` is the self (this has to be passed so the macro can access required attributes/methods)
+/// - `buffer_area` is of type `&mut ratatui::prelude::Buffer`
+/// - `self.widget` is the widget to be rendered
+/// - `self.widget` gains focus at focus index `0`
+/// - `self.widget` will be rendered on `render_area`
+///
+/// (and so on):
+macro_rules! render_widgets {
+    (
+        SELF: $self:ident,
+        BUFFER: $buf:ident,
+        $($num:literal = ($($widget:tt)+) $(($($focus_func:tt)*))? => $area:expr,)+
+    ) => {
+        $(
+            $($widget)+.clone().render($area, $buf);
+        )+
+
+        match $self.get_focused_index() {
+            $(
+                $num => {
+                    make_focused!(
+                        ($($widget)+)
+                        $($($focus_func)*)?
+                    );
+                    $($widget)+.render($area, $buf);
+                }
+            )+
+            _ => unimplemented!()
+        }
+    };
+}
+
+macro_rules! make_focused {
+    (
+        ($($widget:tt)+)
+    ) => {
+        $($widget)+.make_focused();
+    };
+    (
+        ($($widget:tt)+) $($focus_func:tt)*
+    ) => {
+        $($focus_func)*;
+    };
+}
+macro_rules! make_window_enum {
+    (
+        $(
+            $type:ident
+        )+
+    ) => {
+        #[derive(Clone)]
+        enum WindowEnum<'a> {
+            $(
+                $type($type<'a>),
+            )+
+        }
+
+        impl<'a> WindowEnum<'a> {
+            fn get_title(&self) -> String {
+                match self {
+                    $(
+                        WindowEnum::$type(window) => window.get_title(),
+                    )+
+                }
+            }
+
+            fn get_hints(&self) -> Vec<(Event, String)> {
+                match self {
+                    $(
+                        WindowEnum::$type(window) => window.get_hints(),
+                    )+
+                }
+            }
+
+            fn number_of_widgets(&self) -> u8 {
+                match self {
+                    $(
+                        WindowEnum::$type(window) => window.number_of_widgets(),
+                    )+
+                }
+            }
+
+            fn get_focused_index(&self) -> u8 {
+                match self {
+                    $(
+                        WindowEnum::$type(window) => window.get_focused_index(),
+                    )+
+                }
+            }
+
+            fn set_focused_index(&mut self, index: u8) {
+                match self {
+                    $(
+                        WindowEnum::$type(window) => window.set_focused_index(index),
+                    )+
+                }
+            }
+
+            
+            fn perform_action(&mut self, focus_index: u8, event: Event, write_queue: &Sender<SLSKEvents>) {
+                match self {
+                    $(
+                        WindowEnum::$type(window) => window.perform_action(focus_index, event, &write_queue),
+                    )+
+                }
+            }
+        }
+
+        $(
+            impl<'a> From<WindowEnum<'a>> for $type<'a> {
+                fn from(value: WindowEnum<'a>) -> Self {
+                    match value {
+                        WindowEnum::$type(window) => window,
+                        _ => unimplemented!()
+                    }
+                }
+            }
+        )+
     };
 }

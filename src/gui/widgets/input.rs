@@ -3,13 +3,17 @@ use std::fmt::Display;
 use crossterm::event::Event;
 use ratatui::{
     prelude::{Buffer, Rect},
-    style::{Style, Styled},
-    text::{Line, Span},
-    widgets::{Block, Paragraph, Widget},
+    style::{Style, Styled, Stylize, Modifier},
+    text::{Line, Span, Masked},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 use tui_input::{backend::crossterm::EventHandler, Input as TuiInput};
 
-use crate::{utils::{invert_style, mask_string}, gui::windows::WidgetWithHints};
+use crate::{
+    gui::windows::{FocusableWidget, SLSKWidget, WidgetWithHints},
+    styles::STYLE_DEFAULT,
+};
+
 
 #[derive(Clone)]
 pub(crate) enum InputType {
@@ -23,7 +27,7 @@ impl Default for InputType {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub(crate) struct Input<'a> {
     pub(crate) input: TuiInput,
     pub(crate) input_type: InputType,
@@ -31,6 +35,25 @@ pub(crate) struct Input<'a> {
     pub(crate) style: Style,
     pub(crate) block: Block<'a>,
     pub(crate) in_focus: bool,
+}
+
+impl Input<'_> {
+    pub(crate) fn title(&mut self, title: String) -> Self {
+        let mut new_input = self.clone();
+        new_input.block = self.block.clone().title(title);
+        new_input
+    }
+
+    pub(crate) fn input_type(&mut self, input_type: InputType) -> Self {
+        let mut new_input = self.clone();
+        new_input.input_type = input_type;
+        new_input
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.input_string = String::new();
+        self.input.reset();
+    }
 }
 
 impl EventHandler for Input<'_> {
@@ -45,7 +68,7 @@ impl EventHandler for Input<'_> {
                 self.input = self
                     .input
                     .clone()
-                    .with_value(mask_string(&self.input_string))
+                    .with_value(Masked::new(&self.input_string, '*').to_string())
                     .with_cursor(self.input.visual_cursor());
             }
         };
@@ -59,26 +82,50 @@ impl Display for Input<'_> {
     }
 }
 
+impl Default for Input<'_> {
+    fn default() -> Self {
+        Self {
+            input: Default::default(),
+            input_type: Default::default(),
+            input_string: Default::default(),
+            style: STYLE_DEFAULT,
+            block: Block::default().borders(Borders::ALL).on_black(),
+            in_focus: false,
+        }
+    }
+}
+
 impl Widget for Input<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let input_width = area.width.max(3) - 3; // keep 2 for borders and 1 for cursor
         let input_scroll = self.input.visual_scroll(input_width as usize);
-        let cursor = self.input.visual_cursor();
+
+        let cursor = self.input.cursor();
         let raw_text = self.input.value().to_string();
-        let (before, mut after) = raw_text.split_at(cursor);
-        if after == "" {
-            after = " "
-        }
-        let (at, after) = after.split_at(1);
-        let line = Line::from(if self.in_focus {
-            vec![
-                Span::from(before),
-                Span::from(at).set_style(invert_style(self.style)),
-                Span::from(after),
-            ]
+        let line: Line;
+
+        let indices: Vec<(usize, char)> = raw_text.char_indices().collect();
+
+        let at_end = cursor == indices.len();
+        if self.in_focus && at_end {
+            line = Line::from(vec![
+                Span::from(raw_text),
+                Span::from(" ").set_style(self.style.add_modifier(Modifier::REVERSED)),
+            ]);
+        } else if self.in_focus {
+            line = Line::from(vec![
+                Span::from(&raw_text[..indices[cursor].0]),
+                Span::from(indices[cursor].1.to_string()).set_style(self.style.add_modifier(Modifier::REVERSED)),
+                Span::from(if cursor + 1 >= indices.len() {
+                    ""
+                } else {
+                    &raw_text[indices[cursor + 1].0..]
+                }),
+            ]);
         } else {
-            vec![Span::from(before), Span::from(at), Span::from(after)]
-        });
+            line = Line::from(raw_text);
+        }
+
         let input_widget = Paragraph::new(line)
             .style(self.style)
             .scroll((0, input_scroll as u16))
@@ -88,7 +135,16 @@ impl Widget for Input<'_> {
 }
 
 impl WidgetWithHints for Input<'_> {
-    fn get_hints(&self) -> Vec<(crossterm::event::KeyEvent, String)> {
+    fn get_hints(&self) -> Vec<(Event, String)> {
         vec![]
     }
 }
+
+impl FocusableWidget for Input<'_> {
+    fn make_focused(&mut self) {
+        self.block = self.block.clone().title_style(self.style.add_modifier(Modifier::REVERSED));
+        self.in_focus = true;
+    }
+}
+
+impl SLSKWidget for Input<'_> {}

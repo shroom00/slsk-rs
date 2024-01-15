@@ -1,8 +1,8 @@
 use crate::{
     constants::{ConnectionTypes, UserStatusCodes, MAJOR_VERSION, MINOR_VERSION},
-    messages::{macros::*, MessageType},
+    messages::{MessageTrait, MessageType},
     packing::IsntSent,
-    packing::{IsntReceived, UnpackFromBytes},
+    packing::{IsntReceived, PackToBytes, UnpackFromBytes},
     utils::md5_digest,
 };
 
@@ -210,10 +210,6 @@ define_message_to_send!(_SendJoinRoom {
     private: u32,
 });
 
-// TODO: Check if manual implementation is required (for private rooms)
-// May need to rewrite macros if so,
-// so a length check is utilised.
-
 define_message_to_receive!(UserStats {
     avg_speeds: u32,
     upload_num: u64, // Is this the same as num_of_files?
@@ -221,17 +217,46 @@ define_message_to_receive!(UserStats {
     num_of_dirs: u32,
 });
 #[rustfmt::skip]
-define_message_to_receive!(_ReceiveJoinRoom {
-    room: String,
-    usernames: Vec<String>,
-    statuses: Vec<UserStatusCodes>,
-    stats: Vec<UserStats>,
-    slots_free: Vec<u32>,
-    country_codes: Vec<String>,
-    owner: String, // Only exists if room is private? May just be an empty string
-    operators: Vec<String>,  // Only exists if room is private?
-}); // num_of_operators may just be 0u32
+pub struct _ReceiveJoinRoom {
+    pub room: String,
+    pub usernames: Vec<String>,
+    pub statuses: Vec<UserStatusCodes>,
+    pub stats: Vec<UserStats>,
+    pub slots_free: Vec<u32>,
+    pub country_codes: Vec<String>,
+    pub owner:  Option<String>, // Only exists if room is private.
+    pub operators: Option<Vec<String>>,  // Only exists if room is private.
+}
 
+impl UnpackFromBytes for _ReceiveJoinRoom {
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
+        let room = <String>::unpack_from_bytes(bytes);
+        let usernames = <Vec<String>>::unpack_from_bytes(bytes);
+        let statuses = <Vec<UserStatusCodes>>::unpack_from_bytes(bytes);
+        let stats = <Vec<UserStats>>::unpack_from_bytes(bytes);
+        let slots_free = <Vec<u32>>::unpack_from_bytes(bytes);
+        let country_codes = <Vec<String>>::unpack_from_bytes(bytes);
+        let owner: Option<String>;
+        let operators: Option<Vec<String>>;
+        if bytes.len() == 0 {
+            owner = None;
+            operators = None;
+        } else {
+            owner = Some(<String>::unpack_from_bytes(bytes));
+            operators = Some(<Vec<String>>::unpack_from_bytes(bytes));
+        };
+        Self {
+            room,
+            usernames,
+            statuses,
+            stats,
+            slots_free,
+            country_codes,
+            owner,
+            operators,
+        }
+    }
+}
 pub struct JoinRoom;
 impl_message_trait!(
     JoinRoom < _SendJoinRoom,
