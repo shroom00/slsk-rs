@@ -57,6 +57,14 @@ pub(crate) fn keymodifiers_to_string(key: KeyModifiers) -> String {
         .replace("|", "+")
 }
 
+#[cfg(any(
+    target_os = "openbsd",
+    target_os = "redox",
+    target_os = "solaris",
+    target_os = "windows",
+    target_os = "nto",
+    target_os = "espidf",
+))]
 pub(crate) fn keepalive_add_retries(ka: TcpKeepalive) -> TcpKeepalive {
     ka
 }
