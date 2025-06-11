@@ -39,8 +39,7 @@ jobs:
     - name: Get package version
       id: package-version
       run: |
-        VERSION=$(awk -F'"' '/^version *= */ {print $2}' Cargo.toml)
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "version=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')" >> $GITHUB_OUTPUT
     
     - name: Install Rust
       uses: actions-rs/toolchain@v1
