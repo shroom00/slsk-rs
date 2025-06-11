@@ -1,0 +1,64 @@
+name: Multi-Platform Builds with Cargo.toml Version
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            suffix: windows-x64
+            ext: .exe
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            suffix: windows-x86
+            ext: .exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            suffix: linux-x64
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Get package version
+      id: package-version
+      run: |
+        VERSION=$(awk -F'"' '/^version *= */ {print $2}' Cargo.toml)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        target: ${{ matrix.target }}
+        override: true
+    
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build release
+      run: cargo build --target ${{ matrix.target }} --release
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: slsk-rs-v${{ steps.package-version.outputs.version }}-${{ matrix.suffix }}
+        path: target/${{ matrix.target }}/release/slsk-rs${{ matrix.ext }}
