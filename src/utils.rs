@@ -77,7 +77,7 @@ pub(crate) fn keepalive_add_retries(ka: TcpKeepalive) -> TcpKeepalive {
     target_os = "nto",
     target_os = "espidf",
 )))]
-fn keepalive_add_retries(ka: TcpKeepalive) -> TcpKeepalive {
+pub(crate) fn keepalive_add_retries(ka: TcpKeepalive) -> TcpKeepalive {
     ka.with_retries(10)
 }
 
