@@ -56,24 +56,26 @@ impl Default for LoginWindow<'_> {
 impl Widget for LoginWindow<'_> {
     fn render(mut self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         let padding = (area.height - 9) / 2;
-        let columns = Layout::new()
-            .direction(Direction::Horizontal)
-            .constraints([
+        let columns = Layout::new(
+            Direction::Horizontal,
+            [
                 Constraint::Percentage(30),
                 Constraint::Percentage(40),
                 Constraint::Percentage(30),
-            ])
-            .split(area);
-        let chunks = Layout::new()
-            .direction(Direction::Vertical)
-            .constraints([
+            ],
+        )
+        .split(area);
+        let chunks = Layout::new(
+            Direction::Vertical,
+            [
                 Constraint::Length(padding),
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Length(padding),
-            ])
-            .split(columns[1]);
+            ],
+        )
+        .split(columns[1]);
 
         render_widgets!(
             SELF: self,
@@ -87,7 +89,11 @@ impl Widget for LoginWindow<'_> {
 
 impl WidgetWithHints for LoginWindow<'_> {
     fn get_hints(&self) -> Vec<(Event, String)> {
-        self.get_widget(self.focus_index).get_hints()
+        if let Some(widget) = self.get_widget(self.focus_index) {
+            widget.get_hints()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -96,7 +102,12 @@ impl Window<'_> for LoginWindow<'_> {
         self.title.clone()
     }
 
-    fn perform_action(&mut self, focus_index: u8, event: Event, write_queue: &Sender<SLSKEvents>) {
+    fn perform_action(
+            &'_ mut self,
+            focus_index: u8,
+            event: Event,
+            write_queue: &'_ Sender<SLSKEvents>,
+        ) {
         match focus_index {
             0 => self.username_input.handle_event(&event),
             1 => self.password_input.handle_event(&event),
@@ -119,11 +130,11 @@ impl Window<'_> for LoginWindow<'_> {
         3
     }
 
-    fn get_widget(&self, index: u8) -> &dyn SLSKWidget {
+    fn get_widget(&self, index: u8) -> Option<&dyn SLSKWidget> {
         match index {
-            0 => &self.username_input,
-            1 => &self.password_input,
-            2 => &self.login_button,
+            0 => Some(&self.username_input),
+            1 => Some(&self.password_input),
+            2 => Some(&self.login_button),
             _ => unimplemented!(
                 "There are only {} widgets, it's impossible to get the widget with index {index}",
                 self.number_of_widgets()

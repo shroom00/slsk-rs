@@ -1,7 +1,7 @@
 use super::{MessageTrait, MessageType};
 use crate::{
-    constants::{FileAttributeTypes, TransferDirections},
-    packing::{UnpackFromBytes, PackToBytes},
+    constants::TransferDirections,
+    packing::{PackToBytes, UnpackFromBytes},
 };
 
 define_message_to_send_and_receive!(GetSharedFileList {});
@@ -11,7 +11,7 @@ impl_message_trait!(
 );
 
 define_message_to_send_and_receive!(FileAttribute {
-    attribute: FileAttributeTypes,
+    attribute: u32,
     value: u32,
 });
 define_message_to_send_and_receive!(File {
@@ -25,9 +25,16 @@ define_message_to_send_and_receive!(Directory {
     path: String,
     files: Vec<File>,
 });
+
+define_message_to_send_and_receive!(SharedFileListRequest {});
+impl_message_trait!(
+    SharedFileListRequest < SharedFileListRequest,
+    SharedFileListRequest > (MessageType::Peer(4))
+);
+
 define_message_to_send_and_receive!(SharedFileListResponse {
     directories: Vec<Directory>,
-    unknown_0: u32,
+    _unknown_0: u32,
     priv_directories: Vec<Directory>,
 });
 impl_message_trait!(
@@ -43,7 +50,7 @@ define_message_to_send_and_receive!(FileSearchResponse {
     avg_speed: u32,
     queue_length: u32,
     unknown_0: u32,
-    private_files: Vec<File>,
+    (optional) private_files: Option<Vec<File>>,
 });
 impl_message_trait!(
     FileSearchResponse < FileSearchResponse,
@@ -57,12 +64,12 @@ impl_message_trait!(
 );
 
 #[derive(Debug, Clone)]
-pub struct Picture {
-    pub picture: Option<String>,
+pub(crate) struct Picture {
+    pub(crate) picture: Option<String>,
 }
 impl PackToBytes for Picture {
     fn pack_to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![];
+        let mut bytes = Vec::new();
         match &self.picture {
             Some(picture) => {
                 bytes.extend(true.pack_to_bytes());
@@ -74,13 +81,13 @@ impl PackToBytes for Picture {
     }
 }
 impl UnpackFromBytes for Picture {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
-        let exists = <bool>::unpack_from_bytes(bytes);
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self> {
+        let exists = <bool>::unpack_from_bytes(bytes)?;
         let picture: Option<String> = match exists {
-            true => Some(<String>::unpack_from_bytes(bytes)),
+            true => Some(<String>::unpack_from_bytes(bytes)?),
             false => None,
         };
-        Picture { picture }
+        Some(Picture { picture })
     }
 }
 define_message_to_send_and_receive!(UserInfoResponse {
@@ -115,17 +122,17 @@ impl_message_trait!(
     FolderContentsResponse > (MessageType::Peer(37))
 );
 
-#[derive(Debug)]
-pub struct TransferRequest {
-    pub direction: TransferDirections,
-    pub token: u32,
-    pub filename: String,
-    pub filesize: Option<u64>,
+#[derive(Debug, Clone)]
+pub(crate) struct TransferRequest {
+    pub(crate) direction: TransferDirections,
+    pub(crate) token: u32,
+    pub(crate) filename: String,
+    pub(crate) filesize: Option<u64>,
 }
 
 impl PackToBytes for TransferRequest {
     fn pack_to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![];
+        let mut bytes = Vec::new();
         bytes.extend(self.direction.pack_to_bytes());
         bytes.extend(self.token.pack_to_bytes());
         bytes.extend(self.filename.pack_to_bytes());
@@ -137,22 +144,22 @@ impl PackToBytes for TransferRequest {
 }
 
 impl UnpackFromBytes for TransferRequest {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
-        let direction = <TransferDirections>::unpack_from_bytes(bytes);
-        let token = <u32>::unpack_from_bytes(bytes);
-        let filename = <String>::unpack_from_bytes(bytes);
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self> {
+        let direction = <TransferDirections>::unpack_from_bytes(bytes)?;
+        let token = <u32>::unpack_from_bytes(bytes)?;
+        let filename = <String>::unpack_from_bytes(bytes)?;
         let filesize: Option<u64>;
         if direction == TransferDirections::UploadToPeer {
-            filesize = Some(<u64>::unpack_from_bytes(bytes));
+            filesize = Some(<u64>::unpack_from_bytes(bytes)?);
         } else {
             filesize = None
         };
-        TransferRequest {
+        Some(TransferRequest {
             direction,
             token,
             filename,
             filesize,
-        }
+        })
     }
 }
 impl_message_trait!(
@@ -160,38 +167,66 @@ impl_message_trait!(
     TransferRequest > (MessageType::Peer(40))
 );
 
-#[derive(Debug)]
-pub struct TransferResponse {
-    token: u32,
-    allowed: bool,
-    reason: Option<String>,
+#[derive(Debug, Clone)]
+pub(crate) enum TransferResponseReason {
+    Allowed(Option<u64>),
+    NotAllowed(String),
+}
+impl PackToBytes for TransferResponseReason {
+    fn pack_to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        match &self {
+            TransferResponseReason::Allowed(filesize) => {
+                bytes.extend(true.pack_to_bytes());
+                bytes.extend(filesize.pack_to_bytes());
+            }
+            TransferResponseReason::NotAllowed(reason) => {
+                bytes.extend(false.pack_to_bytes());
+                bytes.extend(reason.pack_to_bytes());
+            }
+        }
+        bytes
+    }
+}
+impl UnpackFromBytes for TransferResponseReason {
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self> {
+        let allowed = <bool>::unpack_from_bytes(bytes)?;
+        let reason = if allowed {
+            TransferResponseReason::Allowed(<u64>::unpack_from_bytes(bytes))
+        } else {
+            TransferResponseReason::NotAllowed(<String>::unpack_from_bytes(bytes)?)
+        };
+        Some(reason)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TransferResponse {
+    pub(crate) token: u32,
+    pub(crate) reason: TransferResponseReason,
 }
 impl PackToBytes for TransferResponse {
     fn pack_to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![];
+        let mut bytes = Vec::new();
         bytes.extend(self.token.pack_to_bytes());
-        bytes.extend(self.allowed.pack_to_bytes());
-        if !self.allowed {
-            bytes.extend(self.reason.clone().unwrap_or_default().pack_to_bytes());
-        };
+        match &self.reason {
+            TransferResponseReason::Allowed(filesize) => {
+                bytes.extend(true.pack_to_bytes());
+                bytes.extend(filesize.pack_to_bytes());
+            }
+            TransferResponseReason::NotAllowed(reason) => {
+                bytes.extend(false.pack_to_bytes());
+                bytes.extend(reason.pack_to_bytes());
+            }
+        }
         bytes
     }
 }
 impl UnpackFromBytes for TransferResponse {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
-        let token = <u32>::unpack_from_bytes(bytes);
-        let allowed = <bool>::unpack_from_bytes(bytes);
-        let reason: Option<String>;
-        if allowed {
-            reason = None;
-        } else {
-            reason = Some(<String>::unpack_from_bytes(bytes));
-        };
-        TransferResponse {
-            token,
-            allowed,
-            reason,
-        }
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self> {
+        let token = <u32>::unpack_from_bytes(bytes)?;
+        let reason = <TransferResponseReason>::unpack_from_bytes(bytes)?;
+        Some(TransferResponse { token, reason })
     }
 }
 impl_message_trait!(
@@ -236,12 +271,12 @@ impl_message_trait!(
 );
 
 #[rustfmt::skip]
-define_message_to_send_and_receive!(PlaceInQueuRequest {
+define_message_to_send_and_receive!(PlaceInQueueRequest {
     filename: String,
 });
 impl_message_trait!(
-    PlaceInQueuRequest < PlaceInQueuRequest,
-    PlaceInQueuRequest > (MessageType::Peer(51))
+    PlaceInQueueRequest < PlaceInQueueRequest,
+    PlaceInQueueRequest > (MessageType::Peer(51))
 );
 
 #[rustfmt::skip]

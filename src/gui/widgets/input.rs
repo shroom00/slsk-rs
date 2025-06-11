@@ -136,7 +136,7 @@ impl Widget for Input<'_> {
 
 impl WidgetWithHints for Input<'_> {
     fn get_hints(&self) -> Vec<(Event, String)> {
-        vec![]
+        Vec::new()
     }
 }
 

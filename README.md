@@ -9,8 +9,7 @@ That's the plan anyway.
         Create the other windows
         <br>
         <ul>
-            <li>File search</li>
-            <li>File upload/download</li>
+            <li>File upload</li>
             <li>Private messages</li>
             <li>Settings</li>
         </ul>

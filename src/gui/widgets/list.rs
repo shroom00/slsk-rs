@@ -1,8 +1,8 @@
 use crossterm::event::Event;
 use ratatui::{
     prelude::{Buffer, Rect},
-    style::{Modifier, Style, Stylize},
-    widgets::{Block, Borders, List as TuiList, ListItem, ListState, StatefulWidget, Widget},
+    style::{Style, Stylize},
+    widgets::{Block, Borders, List as TuiList, ListState, StatefulWidget, Widget},
 };
 
 use crate::{
@@ -10,12 +10,12 @@ use crate::{
     styles::STYLE_DEFAULT,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct List<'a> {
-    state: ListState,
-    items: Vec<String>,
-    block: Block<'a>,
-    style: Style,
+    pub(crate) state: ListState,
+    pub(crate) items: Vec<String>,
+    pub(crate) block: Block<'a>,
+    pub(crate) style: Style,
 }
 
 impl List<'_> {
@@ -34,10 +34,33 @@ impl Widget for List<'_> {
         let lower_bound = self.items.len().saturating_sub(area.height as usize);
         let width = area.width.saturating_sub(3) as usize; // - 3 to account for possible borders (-2 caused one character to overflow?)
 
-        let items: Vec<ListItem> = self.items[lower_bound..]
-            .iter()
-            .map(|item| ListItem::new(textwrap::fill(item, width)))
-            .collect();
+        let item_num = self.items.len() - lower_bound;
+        let mut items: Vec<String> = Vec::with_capacity(item_num);
+        let mut heights: Vec<usize> = Vec::with_capacity(item_num);
+
+        for item in &self.items[lower_bound..] {
+            let text = textwrap::wrap(item, width);
+            heights.push(text.len());
+            items.push(text.join("\n"));
+        }
+
+        let inner = self.block.inner(area);
+        let block_height = inner.height as usize;
+        while items.len() > 0 {
+            let total = heights.iter().sum::<usize>();
+            if total >= block_height {
+                if total - heights[0] > block_height {
+                    items.remove(0);
+                    heights.remove(0);
+                } else {
+                    let difference = total - block_height;
+                    items[0] = items[0].split("\n").collect::<Vec<_>>()[difference..].join("\n");
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
 
         let list = TuiList::new(items)
             .block(self.block)
@@ -49,7 +72,7 @@ impl Widget for List<'_> {
 
 impl WidgetWithHints for List<'_> {
     fn get_hints(&self) -> Vec<(Event, String)> {
-        vec![]
+        Vec::new()
     }
 }
 

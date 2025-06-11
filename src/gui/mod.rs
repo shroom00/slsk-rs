@@ -1,10 +1,11 @@
-mod widgets;
+pub(crate) mod widgets;
 mod windows;
 use crate::utils::now_as_string;
+use crate::{log, DownloadStatus, Percentage};
 
 use crate::{
     events::SLSKEvents,
-    gui::widgets::chatroom::ChatroomState,
+    gui::widgets::chatrooms::ChatroomState,
     styles::{
         STYLE_DEFAULT_HIGHLIGHT_LOW_CONTRAST, STYLE_DEFAULT_LOW_CONTRAST, STYLE_DISABLED_DEFAULT,
         STYLE_FAIL_DEFAULT,
@@ -19,10 +20,16 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use tokio::sync::RwLock;
+use widgets::list::List;
 
+use self::windows::filesearch::FileSearchWindow;
 use self::{
     widgets::dropdown::DropdownItem,
-    windows::{chatrooms::ChatroomsWindow, login::LoginWindow, WidgetWithHints, Window},
+    windows::{
+        chatrooms::ChatroomsWindow, downloads::DownloadsWindow, login::LoginWindow,
+        WidgetWithHints, Window,
+    },
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -34,15 +41,20 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::sync::atomic::AtomicU16;
-use std::{collections::HashMap, error::Error, io, time::Duration};
+use std::sync::Arc;
+use std::{error::Error, io, time::Duration};
 use tokio::sync::broadcast::{Receiver, Sender};
 
 /// Width, Height
 static WINDOW_RESOLUTION: (AtomicU16, AtomicU16) = (AtomicU16::new(0), AtomicU16::new(0));
 
 make_window_enum!(
-    LoginWindow
-    ChatroomsWindow
+    ('a),
+    LoginWindow get_mut_login 0 ('a),
+    ChatroomsWindow get_mut_chatrooms 1 ('a),
+    // FileSearchWindow get_mut_filesearch 2 ('a, 'b),
+    FileSearchWindow get_mut_filesearch 2 ('a),
+    DownloadsWindow get_mut_downloads 3 ('a),
 );
 
 #[derive(Clone)]
@@ -51,7 +63,6 @@ struct App<'a> {
     current_index: u8,
     select_index: u8,
     focused_widget: u8,
-    users: HashMap<String, String>,
     hints: Vec<(Event, String)>,
 }
 
@@ -60,6 +71,8 @@ impl<'a> App<'a> {
         match self.get_current_window() {
             WindowEnum::LoginWindow(widget) => f.render_widget(widget.to_owned(), area),
             WindowEnum::ChatroomsWindow(widget) => f.render_widget(widget.to_owned(), area),
+            WindowEnum::FileSearchWindow(widget) => f.render_widget(widget.to_owned(), area),
+            WindowEnum::DownloadsWindow(widget) => f.render_widget(widget.to_owned(), area),
         }
     }
 
@@ -78,11 +91,12 @@ impl<'a> Default for App<'a> {
             windows: vec![
                 WindowEnum::LoginWindow(LoginWindow::default()),
                 WindowEnum::ChatroomsWindow(ChatroomsWindow::default()),
+                WindowEnum::FileSearchWindow(FileSearchWindow::default()),
+                WindowEnum::DownloadsWindow(DownloadsWindow::default()),
             ],
             current_index: 0,
             select_index: 0,
             focused_widget: 0,
-            users: HashMap::default(),
             hints: vec![
                 (
                     Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
@@ -152,8 +166,7 @@ fn run_app<B: Backend>(
         match gui_event {
             Some(gui_event) => match gui_event {
                 SLSKEvents::LoginResult { success, reason } => {
-                    // This is hardcoded because we know the first window is the login window.
-                    let mut login_window = LoginWindow::from(app.windows[0].clone());
+                    let login_window = app.get_mut_login();
                     let label: String;
                     let style: Style;
                     match success {
@@ -169,21 +182,14 @@ fn run_app<B: Backend>(
                         }
                     };
                     login_window.login_button.set_label(label);
-                    login_window.login_button = login_window.login_button.set_style(style);
-
-                    // As we can't move the login window (as `LoginWindow`) out of `app.windows`,
-                    // we clone the window and *then* convert it to `LoginWindow`.
-                    // We alter the cloned window, then convert it back to the relevant enum variant
-                    // and reassign the window in the app.
-                    app.windows[0] = WindowEnum::LoginWindow(login_window);
+                    login_window.login_button = login_window.login_button.clone().set_style(style);
                 }
-
                 SLSKEvents::Quit => return Ok(()),
                 SLSKEvents::TryLogin { .. } => (),
                 SLSKEvents::RoomList {
                     mut rooms_and_num_of_users,
                 } => {
-                    let mut chatroom_window = ChatroomsWindow::from(app.windows[1].clone());
+                    let chatroom_window = app.get_mut_chatrooms();
 
                     rooms_and_num_of_users.sort_by_key(|k| k.1);
                     rooms_and_num_of_users.reverse();
@@ -194,28 +200,27 @@ fn run_app<B: Backend>(
                             if !chatroom_window.chatrooms.contains_key(&s) {
                                 chatroom_window
                                     .chatrooms
-                                    .insert(s.clone(), ChatroomState::default());
+                                    .insert(s.clone(), (ChatroomState::default(), List::default()));
                             }
                             DropdownItem::empty(s)
                         })
                         .collect();
-
-                    app.windows[1] = WindowEnum::ChatroomsWindow(chatroom_window);
                 }
                 SLSKEvents::JoinRoom { .. } => (),
+                SLSKEvents::LeaveRoom { .. } => (),
                 SLSKEvents::UpdateRoom { room, stats } => {
-                    let mut chatroom_window = ChatroomsWindow::from(app.windows[1].clone());
+                    let chatroom_window = app.get_mut_chatrooms();
 
                     for (user, user_stats) in stats {
                         chatroom_window
                             .chatrooms
                             .get_mut(&room)
                             .unwrap()
+                            .0
                             .add_user(user, user_stats);
                     }
 
                     chatroom_window.update_sidebar();
-                    app.windows[1] = WindowEnum::ChatroomsWindow(chatroom_window);
                 }
                 SLSKEvents::ChatroomMessage {
                     room,
@@ -223,15 +228,89 @@ fn run_app<B: Backend>(
                     message,
                 } => match username {
                     Some(username) => {
-                        let mut chatroom_window = ChatroomsWindow::from(app.windows[1].clone());
+                        let chatroom_window = app.get_mut_chatrooms();
+
                         chatroom_window
                             .get_mut_specific_chatroom_state(&room)
                             .unwrap()
                             .add_message(format!("{} [{}] {message}", username, now_as_string()));
-                        app.windows[1] = WindowEnum::ChatroomsWindow(chatroom_window);
                     }
                     None => (),
                 },
+                SLSKEvents::SearchResults(results) => {
+                    let filesearch_window = app.get_mut_filesearch();
+                    filesearch_window.add_results(results);
+                }
+                SLSKEvents::FileSearch { .. } => (),
+                SLSKEvents::QueueMessage { .. } => (),
+                SLSKEvents::GetInfo(_) => (),
+                SLSKEvents::Connect { .. } => (),
+                SLSKEvents::NewDownloads {
+                    username,
+                    folder,
+                    files,
+                    from_all,
+                } => {
+                    let downloads_window = app.get_mut_downloads();
+                    let files: Vec<_> = files
+                        .into_iter()
+                        .map(|(filename, filesize, token)| {
+                            (
+                                filename,
+                                filesize,
+                                token,
+                                Arc::new(RwLock::new(DownloadStatus::Queued)),
+                                Arc::new(RwLock::new(Percentage(0))),
+                            )
+                        })
+                        .collect();
+
+                    downloads_window.add_folder(username, folder.clone(), files.clone());
+
+                    let _ = &write_queue
+                        .send(SLSKEvents::UpdateDownloads {
+                            files: files
+                                .into_iter()
+                                .map(|(filename, _, _, status, percentage)| {
+                                    (format!("{folder}{filename}"), status, percentage)
+                                })
+                                .collect(),
+                            from_all,
+                        })
+                        .unwrap();
+                }
+                SLSKEvents::NewDownload {
+                    username,
+                    folder,
+                    token,
+                    filename,
+                    filesize,
+                } => {
+                    let downloads_window = app.get_mut_downloads();
+
+                    let percentage = Arc::new(RwLock::new(Percentage(0)));
+                    let status = Arc::new(RwLock::new(DownloadStatus::Queued));
+
+                    downloads_window.add_file(
+                        username,
+                        folder.clone(),
+                        filename.clone(),
+                        filesize,
+                        token,
+                        status.clone(),
+                        percentage.clone(),
+                    );
+
+                    let _ = &write_queue
+                        .send(SLSKEvents::UpdateDownload {
+                            filename: format!("{folder}{filename}"),
+                            status,
+                            percentage,
+                        })
+                        .unwrap();
+                }
+                SLSKEvents::UpdateDownload { .. } => (),
+                SLSKEvents::UpdateDownloads { .. } => (),
             },
             None => (),
         }
@@ -240,6 +319,19 @@ fn run_app<B: Backend>(
 
         let window_count = app.get_window_count();
         let window = &mut app.windows[app.current_index as usize];
+        let window: &mut dyn Window<'_> = match window {
+            WindowEnum::LoginWindow(login_window) => login_window,
+            WindowEnum::ChatroomsWindow(chatrooms_window) => chatrooms_window,
+            WindowEnum::FileSearchWindow(file_search_window) => {
+                // if the dialog is visible, we want to treat it as the main window
+                if file_search_window.dialog.visible {
+                    &mut file_search_window.dialog
+                } else {
+                    file_search_window
+                }
+            }
+            WindowEnum::DownloadsWindow(downloads_window) => downloads_window,
+        };
 
         if event::poll(Duration::from_millis(25)).unwrap_or(false) == false {
             continue;
@@ -286,6 +378,7 @@ fn run_app<B: Backend>(
                         return Ok(());
                     }
                     KeyCode::BackTab => {
+                        // previous widget
                         app.focused_widget = if app.focused_widget == 0 {
                             window.number_of_widgets() - 1
                         } else {
@@ -298,6 +391,7 @@ fn run_app<B: Backend>(
                 }
             } else {
                 match key.code {
+                    // next widget
                     KeyCode::Tab => {
                         app.focused_widget = (app.focused_widget + 1) % window.number_of_widgets();
                         window.set_focused_index(app.focused_widget);
@@ -307,6 +401,7 @@ fn run_app<B: Backend>(
                 }
             };
             window.perform_action(app.focused_widget, terminal_event, &write_queue);
+            log("finished handling termina; event");
         }
     }
 }
@@ -321,13 +416,13 @@ fn ui(f: &mut Frame, app: &App) {
     let divider = symbols::line::VERTICAL;
 
     let (current_hint_paragraph, current_hint_lines) =
-        key_events_into_paragraph_tabs(current_hints, Some(divider), f.size().width);
+        key_events_into_paragraph_tabs(current_hints, Some(divider), f.area().width);
     let current_hint_paragraph = current_hint_paragraph
         .alignment(ratatui::prelude::Alignment::Center)
         .set_style(STYLE_DEFAULT_LOW_CONTRAST);
 
     let (hint_paragraph, hint_lines) =
-        key_events_into_paragraph_tabs(hints, Some(divider), f.size().width);
+        key_events_into_paragraph_tabs(hints, Some(divider), f.area().width);
     let hint_paragraph = hint_paragraph
         .alignment(ratatui::prelude::Alignment::Center)
         .set_style(STYLE_DEFAULT_LOW_CONTRAST)
@@ -346,7 +441,7 @@ fn ui(f: &mut Frame, app: &App) {
             // Generic client hints (+ 1 is to include the top border)
             Constraint::Length(hint_lines + 1),
         ])
-        .split(f.size());
+        .split(f.area());
 
     let titles: Vec<String> = app_windows
         .iter()
@@ -360,7 +455,7 @@ fn ui(f: &mut Frame, app: &App) {
         app.current_index as usize,
     );
 
-    let terminal_size = f.size();
+    let terminal_size = f.area();
     WINDOW_RESOLUTION
         .0
         .store(terminal_size.width, std::sync::atomic::Ordering::Release);

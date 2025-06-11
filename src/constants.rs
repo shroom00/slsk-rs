@@ -1,7 +1,10 @@
-use crate::{packing::PackToBytes, packing::UnpackFromBytes};
+use std::ops::Add;
+
+use crate::{packing::{PackToBytes, UnpackFromBytes}, utils::num_as_bytes};
 
 pub(crate) const MAJOR_VERSION: u32 = 160;
 pub(crate) const MINOR_VERSION: u32 = 1;
+pub(crate) const MAX_RESULTS: u32 = 1500;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum UserStatusCodes {
@@ -17,17 +20,17 @@ impl Default for UserStatusCodes {
 }
 
 impl UnpackFromBytes for UserStatusCodes {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self>
     where
         Self: Sized,
     {
-        let u = <u32>::unpack_from_bytes(bytes);
-        match u {
+        let u = <u32>::unpack_from_bytes(bytes)?;
+        Some(match u {
             0 => Self::Offline,
             1 => Self::Away,
             2 => Self::Online,
             _ => Self::Offline,
-        }
+        })
     }
 }
 
@@ -41,7 +44,7 @@ impl PackToBytes for UserStatusCodes {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum TransferDirections {
     DownloadFromPeer,
     UploadToPeer,
@@ -56,17 +59,17 @@ impl PackToBytes for TransferDirections {
 }
 
 impl UnpackFromBytes for TransferDirections {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
-        let u = <u32>::unpack_from_bytes(bytes);
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self> {
+        let u = <u32>::unpack_from_bytes(bytes)?;
         match u {
-            0 => Self::DownloadFromPeer,
-            1 => Self::UploadToPeer,
-            _ => todo!(),
+            0 => Some(Self::DownloadFromPeer),
+            1 => Some(Self::UploadToPeer),
+            _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConnectionTypes {
     PeerToPeer,
     FileTransfer,
@@ -84,12 +87,12 @@ impl PackToBytes for ConnectionTypes {
 }
 
 impl UnpackFromBytes for ConnectionTypes {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self>
     where
         Self: Sized,
     {
-        let string = <String>::unpack_from_bytes(bytes);
-        match string.as_str() {
+        let string = <String>::unpack_from_bytes(bytes)?;
+        Some(match string.as_str() {
             "P" => Self::PeerToPeer,
             "F" => Self::FileTransfer,
             "D" => Self::DistributedNetwork,
@@ -100,7 +103,7 @@ impl UnpackFromBytes for ConnectionTypes {
             // For now, this seems safe but will need to check
             // when the backend is properly made
             _ => Self::PeerToPeer,
-        }
+        })
     }
 }
 
@@ -133,19 +136,80 @@ impl PackToBytes for FileAttributeTypes {
 }
 
 impl UnpackFromBytes for FileAttributeTypes {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self>
     where
         Self: Sized,
     {
-        let u = <u32>::unpack_from_bytes(bytes);
+        let u = <u32>::unpack_from_bytes(bytes)?;
         match u {
-            0 => Self::Bitrate,
-            1 => Self::Duration,
-            2 => Self::VBR,
-            3 => Self::Encoder,
-            4 => Self::SampleRate,
-            5 => Self::BitDepth,
-            _ => todo!(),
+            0 => Some(Self::Bitrate),
+            1 => Some(Self::Duration),
+            2 => Some(Self::VBR),
+            3 => Some(Self::Encoder),
+            4 => Some(Self::SampleRate),
+            5 => Some(Self::BitDepth),
+            _ => None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DownloadStatus {
+    Queued,
+    Starting,
+    Downloading,
+    Complete,
+    Failed,
+}
+
+impl DownloadStatus {
+    pub(crate) fn str(&self) -> &'static str {
+        match *self {
+            DownloadStatus::Queued => "Queued",
+            DownloadStatus::Starting => "Starting",
+            DownloadStatus::Downloading => "Downloading",
+            DownloadStatus::Complete => "Complete",
+            DownloadStatus::Failed => "Failed",
+        }
+    }
+}
+
+impl ToString for DownloadStatus {
+    fn to_string(&self) -> String {
+        self.str().to_string()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ByteSize(pub(crate) u64);
+
+impl ToString for ByteSize {
+    fn to_string(&self) -> String {
+        num_as_bytes(self.0)
+    }
+}
+
+impl Add for ByteSize {
+    type Output = ByteSize;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        ByteSize(self.0 + rhs.0)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Percentage(pub(crate) u8);
+
+impl ToString for Percentage {
+    fn to_string(&self) -> String {
+        format!("{}%", self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Token(pub(crate) u32);
+
+impl ToString for Token {
+    fn to_string(&self) -> String {
+        self.0.to_string()
     }
 }

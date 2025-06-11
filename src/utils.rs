@@ -1,21 +1,29 @@
+use std::{
+    fs::OpenOptions,
+    io::Write,
+};
+
 use byte_unit::Byte;
 use chrono::Local;
 use crossterm::event::{Event, KeyModifiers};
 use md5::{Digest, Md5};
 use num_format::{Buffer, Locale, ToFormattedStr};
 use ratatui::{
+    layout::Constraint,
     style::Style,
     text::{Line, Span},
     widgets::{Block, Paragraph, Tabs},
 };
 use socket2::TcpKeepalive;
 
-use crate::styles::{STYLE_DEFAULT_HIGHLIGHT_LOW_CONTRAST, STYLE_DEFAULT_LOW_CONTRAST};
+use crate::table::TableWidget;
 
+#[allow(dead_code)]
 pub(crate) fn latin1_to_string(s: &[u8]) -> String {
     s.iter().map(|&c| c as char).collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn bytes_to_hex(bytes: &Vec<u8>) -> String {
     bytes
         .iter()
@@ -49,14 +57,6 @@ pub(crate) fn keymodifiers_to_string(key: KeyModifiers) -> String {
         .replace("|", "+")
 }
 
-pub(crate) fn mask_string(input: &str) -> String {
-    let mut masked = String::with_capacity(input.len());
-    for _ in input.chars() {
-        masked.push('*');
-    }
-    masked
-}
-
 pub(crate) fn keepalive_add_retries(ka: TcpKeepalive) -> TcpKeepalive {
     ka
 }
@@ -78,62 +78,67 @@ pub(crate) fn key_events_into_paragraph_tabs<'a>(
     divider: Option<&'a str>,
     width: u16,
 ) -> (Paragraph<'a>, u16) {
-    let width = width.max(4) - 4;
-    let divider = match divider {
-        Some(d) => d,
-        None => "",
-    };
+    let min_width = 4;
+    let width = width.max(min_width) - min_width;
+    let divider = divider.unwrap_or("");
     let divider_span = Span::from(divider);
-    let mut tabs: Vec<Vec<Span>> = vec![];
-    let mut current_line: Vec<Span> = vec![];
+
+    let mut tabs: Vec<Vec<Span>> = Vec::new();
+    let mut current_line: Vec<Span> = Vec::new();
     let mut current_width = 0;
-    let mut num_of_lines = 0;
-    let mut current_hint_num: usize = 1;
-    key_events.iter().for_each(|(event, hint)| {
+    let mut num_of_lines = 1;
+
+    for (i, (event, hint)) in key_events.iter().enumerate() {
         let text = if let Event::Key(key) = event {
-            Span::from(if key.modifiers == KeyModifiers::NONE {
-                format!(" {:?} = {} ", key.code, hint)
+            if key.modifiers == KeyModifiers::NONE {
+                Span::from(format!(" {:?} = {} ", key.code, hint))
             } else {
-                format!(
+                Span::from(format!(
                     " {} + {:?} = {} ",
                     keymodifiers_to_string(key.modifiers),
                     key.code,
                     hint
-                )
-            })
+                ))
+            }
         } else {
             unimplemented!()
         };
-        // if room for text
-        let t_width = text.width() as u16;
-        if t_width + current_width < width {
-            current_width += t_width;
-            current_line.push(text);
-            let d_width = divider_span.width() as u16;
-            if d_width + current_width < width {
-                current_width += d_width;
-                current_line.push(divider_span.clone());
-            }
-            if current_hint_num == key_events.len() {
-                if current_line[current_line.len() - 1].content.to_string() == divider {
+
+        let text_width = text.width() as u16;
+        let divider_width = divider_span.width() as u16;
+
+        if current_width + text_width > width {
+            if let Some(last) = current_line.last() {
+                if last.content == divider {
                     current_line.pop();
                 }
-                tabs.push(current_line.clone());
-                current_width = 0;
-                num_of_lines += 1;
             }
-        } else if current_line.len() != 0 {
-            if current_line[current_line.len() - 1].content.to_string() == divider {
+
+            tabs.push(current_line);
+            current_line = Vec::new();
+            current_width = 0;
+            num_of_lines += 1;
+        }
+
+        current_line.push(text);
+        current_width += text_width;
+
+        if i < key_events.len() - 1 && current_width + divider_width <= width {
+            current_line.push(divider_span.clone());
+            current_width += divider_width;
+        }
+    }
+
+    if !current_line.is_empty() {
+        if let Some(last) = current_line.last() {
+            if last.content == divider {
                 current_line.pop();
             }
-            tabs.push(current_line.clone());
-            current_line = vec![];
-            current_width = 0;
-            num_of_lines += 1
         }
-        current_hint_num += 1;
-    });
-    let lines: Vec<Line<'_>> = tabs.into_iter().map(|line| Line::from(line)).collect();
+        tabs.push(current_line);
+    }
+
+    let lines = tabs.into_iter().map(Line::from).collect::<Vec<_>>();
     (Paragraph::new(lines), num_of_lines)
 }
 
@@ -158,90 +163,6 @@ pub(crate) fn vec_string_to_tabs<'a>(
     }
 }
 
-/// Gets the width of a character (in terms of ratatui screen units)
-///
-/// The width will either be 1 (utf8) or 2 (utf16 / unicode)
-pub(crate) fn unicode_width(ch: char) -> u8 {
-    if ch.len_utf8() == 1 {
-        1
-    } else {
-        2
-    }
-}
-
-/// Gets the width of each character (in terms of ratatui screen units) in a string and returns (width, char) pairs
-pub(crate) fn unicode_char_lengths<S>(string: S) -> Vec<(u8, char)>
-where
-    S: Iterator<Item = char>,
-{
-    string.into_iter().map(|c| (unicode_width(c), c)).collect()
-}
-
-// pub(crate) fn concat_text<'a, T>(text: T, max_width: usize)
-// where
-//     T: Into<Text<'a>>,
-// {
-//     const GENERIC_STYLE: Style = Style::new();
-//     let text: Text = text.into();
-//     let mut previous_style: Style =  Style::new();
-//     let mut current_line: Vec<StyledGrapheme> = vec![];
-//     let mut lines: Vec<Line> = vec![];
-//     let mut spans = vec![];
-//     let mut graphemes: Vec<StyledGrapheme> = vec![];
-//     let mut current_width: usize = 0;
-
-//     for line in text.lines {
-//         spans.extend(line.spans)
-//     }
-
-//     for span in &spans {
-//         graphemes.extend(span.styled_graphemes(GENERIC_STYLE));
-//     }
-
-//     for grapheme in graphemes {
-//         if previous_style != grapheme.style {
-//             current_line.push(
-
-//             )
-//         }
-
-//         if current_width + 1 <= max_width {
-//             current_width += 1;
-//             current_line.push(grapheme);
-//         } else {
-//             lines.push(Line::from(Span::from(current_line)))
-//         }
-//     }
-// }
-
-/// Splits a line (e.g. `String.chars()`) into chunks of (at most) `line_width` width (in terms of ratatui screen units)
-pub(crate) fn into_unicode_chunks<C>(chars: C, line_width: u16) -> Vec<String>
-where
-    C: Iterator<Item = char>,
-{
-    let mut current_width = 0;
-    let mut lines: Vec<String> = vec![];
-    let mut current_line: String = String::new();
-
-    for ch in chars {
-        let width = unicode_width(ch) as u16;
-        if width + current_width <= line_width {
-            current_width += width;
-            current_line.push(ch)
-        } else {
-            current_width = 0;
-            lines.push(current_line);
-            current_line = String::from(ch);
-        }
-    }
-
-    if current_width != 0 {
-        lines.push(current_line)
-    }
-
-    lines
-}
-
 pub(crate) fn num_as_str<N>(num: N) -> String
 where
     N: ToFormattedStr,
@@ -251,9 +172,47 @@ where
     buf.to_string()
 }
 
+/// Results will be 10 characters at most.
+/// Outputs in the form 123.45 MB etc.
 pub(crate) fn num_as_bytes(num: u64) -> String {
     format!(
         "{:.2}",
         Byte::from_u64(num).get_appropriate_unit(byte_unit::UnitType::Decimal)
     )
+}
+
+pub(crate) fn default_results_table<'a>() -> TableWidget<'a> {
+    TableWidget::new(
+        vec![
+            String::from("User"),
+            String::from("Speed"),
+            String::from("Queue"),
+            String::from("Folder"),
+            String::from("Filename"),
+            String::from("Size"),
+        ],
+        Vec::new(),
+        Some(3..5),
+        Some(vec![
+            Constraint::Max(30), // username
+            Constraint::Max(10), // average speed
+            Constraint::Max(6),  // queue length
+            Constraint::Fill(1), // folder
+            Constraint::Fill(2), // filename
+            Constraint::Max(10), // filesize
+        ]),
+    )
+}
+
+/// Adds newline to text
+pub(crate) fn log<T: Into<String>>(text: T) {
+    if crate::LOGGING_ENABLED {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("MY.log")
+            .unwrap();
+        f.write_all(format!("{}: {}\n", now_as_string(), &text.into()).as_bytes())
+            .unwrap();
+    }
 }

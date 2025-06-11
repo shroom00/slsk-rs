@@ -2,14 +2,13 @@ macro_rules! generate_struct {
     (
         $struct_name:ident {
             $(
-                $field_name:ident: $field_type:ty $({
+                $(($_:ident))? $field_name:ident: $field_type:ty $({
                     $($iter_name:ident: $iter_type:ty,)+
                 })?
             ,)*
         }
     ) => {
         // Debug isn't always used
-        #[allow(dead_code)]
         #[derive(Debug, Clone)]
         pub struct $struct_name {
             $(
@@ -23,7 +22,7 @@ macro_rules! impl_pack_to_bytes {
     (
         $struct_name:ident {
             $(
-                $field_name:ident: $field_type:ty $(
+                $(($_:ident))? $field_name:ident: $field_type:ty $(
                     {
                         $($iter_name:ident: $iter_type:ty,)+
                     }
@@ -35,7 +34,7 @@ macro_rules! impl_pack_to_bytes {
             fn pack_to_bytes(&self) -> Vec<u8> {
                 // In the case where there are no fields, it's unused_mut, but if there are fields it needs to be mutable
                 #[allow(unused_mut)]
-                let mut bytes: Vec<u8> = vec![];
+                let mut bytes: Vec<u8> = Vec::new();
                 $(
                     bytes.extend(self.$field_name.pack_to_bytes());
                     $(
@@ -58,40 +57,42 @@ macro_rules! impl_pack_to_bytes {
     };
 }
 
+macro_rules! unpack {
+    (
+        $optional:ident $field_name:ident: $field_type:ty => $stream:ident
+    ) => {
+        let $field_name = <$field_type>::unpack_from_bytes($stream).unwrap_or(None);
+    };
+    (
+        $field_name:ident: $field_type:ty => $stream:ident
+    ) => {
+        let $field_name = <$field_type>::unpack_from_bytes($stream)?;
+    };
+}
+
 macro_rules! impl_unpack_from_stream {
     (
         $struct_name:ident {
             $(
-                $field_name:ident: $field_type:ty $({
-                    $($iter_name:ident: $iter_type:ty,)+
-                })?
+                $(($optional:ident))? $field_name:ident: $field_type:ty
             ,)*
         }
     ) => {
         // Sometimes messages may be empty (length/code only) and so stream is "unused"
         #[allow(unused_variables)]
         impl UnpackFromBytes for $struct_name {
-            fn unpack_from_bytes(stream: &mut Vec<u8>) -> Self {
+            fn unpack_from_bytes(stream: &mut Vec<u8>) -> Option<Self> {
                 $(
-                    let $field_name = <$field_type>::unpack_from_bytes(stream);
-                    $(
-                            $(
-                                let mut $iter_name: Vec<$iter_type> = Vec::with_capacity($field_name as usize);
-                            )+
-                            for _ in (0 as $field_type)..$field_name {
-                                $(
-                                    $iter_name.push(<$iter_type>::unpack_from_bytes(stream));
-                                )+
-                            }
-                    )?
+                    unpack!($($optional)? $field_name: $field_type => stream);
                 )*
 
-                $struct_name {
-                    $(
-                        $field_name,
-                        $($($iter_name,)+)?
-                    )*
-                }
+                Some(
+                    $struct_name {
+                        $(
+                            $field_name,
+                        )*
+                    }
+                )
             }
         }
     };
@@ -142,24 +143,24 @@ macro_rules! define_message_to_send_and_receive {
 /// ```
 /// SELF: self,
 /// BUFFER: buffer_area,
-/// 0 = widget => render_area,
-/// 1 = widget2 => render_area2,
+/// 0 = (self.attr_widget) => render_area,
+/// 1 = (local_widget) => render_area2,
 /// ````
 ///
 /// This assumes the following:
 ///
 /// - `self` is the self (this has to be passed so the macro can access required attributes/methods)
 /// - `buffer_area` is of type `&mut ratatui::prelude::Buffer`
-/// - `self.widget` is the widget to be rendered
-/// - `self.widget` gains focus at focus index `0`
-/// - `self.widget` will be rendered on `render_area`
+/// - `self.attr_widget` is the widget to be rendered
+/// - `self.attr_widget` gains focus at focus index `0`
+/// - `self.attr_widget` will be rendered on `render_area`
 ///
 /// (and so on):
 macro_rules! render_widgets {
     (
         SELF: $self:ident,
         BUFFER: $buf:ident,
-        $($num:literal = ($($widget:tt)+) $(($($focus_func:tt)*))? => $area:expr,)+
+        $($num:literal = ($($widget:tt)+) $([$($state:tt)*])? $(($($focus_func:tt)*))? => $area:expr,)+
     ) => {
         $(
             $($widget)+.clone().render($area, $buf);
@@ -192,20 +193,32 @@ macro_rules! make_focused {
         $($focus_func)*;
     };
 }
+
+/// Creates the `WindowEnum` enum (doing it manually involves lots of boilerplate).
+/// Also implements a mutable getter for each WindowType in `App.windows`
+/// (assuming `windows` contains one of each `WindowType` at fixed locations)
+///
+/// **Usage (repeatable):**
+/// ```
+/// WindowType get_mut_func 0,
+/// ```
+/// This assumes `App.windows` contains `WindowEnum::WindowType(_)` at index 0.
 macro_rules! make_window_enum {
     (
+        ($($all_lifetimes:tt)+),
         $(
-            $type:ident
+            $type:ident $get_mut_func:ident $num:literal ($($lifetime:tt)+),
         )+
     ) => {
         #[derive(Clone)]
-        enum WindowEnum<'a> {
+        enum WindowEnum<$($all_lifetimes)+> {
             $(
-                $type($type<'a>),
+                $type($type<$($lifetime)+>),
             )+
         }
 
-        impl<'a> WindowEnum<'a> {
+        #[allow(dead_code)]
+        impl<$($all_lifetimes)+> WindowEnum<$($all_lifetimes)+> {
             fn get_title(&self) -> String {
                 match self {
                     $(
@@ -246,7 +259,6 @@ macro_rules! make_window_enum {
                 }
             }
 
-            
             fn perform_action(&mut self, focus_index: u8, event: Event, write_queue: &Sender<SLSKEvents>) {
                 match self {
                     $(
@@ -256,15 +268,15 @@ macro_rules! make_window_enum {
             }
         }
 
-        $(
-            impl<'a> From<WindowEnum<'a>> for $type<'a> {
-                fn from(value: WindowEnum<'a>) -> Self {
-                    match value {
-                        WindowEnum::$type(window) => window,
+        impl<$($all_lifetimes)+> App<$($all_lifetimes)+> {
+            $(
+                fn $get_mut_func<'get>(&'get mut self) -> &'get mut $type<$($lifetime)+> {
+                    match self.windows[$num] {
+                        WindowEnum::$type(ref mut window) => window,
                         _ => unimplemented!()
                     }
                 }
-            }
-        )+
-    };
+            )+
+        }
+    }
 }

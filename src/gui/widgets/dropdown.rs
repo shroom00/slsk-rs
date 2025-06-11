@@ -4,8 +4,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::Text,
     widgets::{
-        block::Position, Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget,
-        Widget, Clear,
+        block::Position, Block, Borders, Clear, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
     },
 };
 use tui_input::backend::crossterm::EventHandler;
@@ -22,12 +21,14 @@ use super::{input::Input, SelectItem};
 
 #[derive(Clone)]
 pub(crate) enum DropdownHeader<'a> {
+    #[allow(dead_code)]
     Search(Input<'a>),
     Title(&'a str),
 }
 
 pub(crate) trait DropwdownTrait: SelectItem {
     fn get_children(&self) -> &Vec<DropdownItem>;
+    #[allow(dead_code)]
     fn mut_get_children(&mut self) -> &mut Vec<DropdownItem>;
     fn selected(&self) -> Option<usize>;
     fn is_open(&self) -> bool;
@@ -75,6 +76,7 @@ pub(crate) struct DropdownItem {
 }
 
 impl DropdownItem {
+    #[allow(dead_code)]
     pub(crate) fn new<T>(text: T, children: Vec<DropdownItem>) -> Self
     where
         T: Into<String>,
@@ -92,11 +94,12 @@ impl DropdownItem {
     {
         Self {
             text: text.into(),
-            children: vec![],
+            children: Vec::new(),
             ..Default::default()
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn flat<T>(text: T, children: Vec<String>) -> Self
     where
         T: Into<String>,
@@ -117,7 +120,7 @@ impl Default for DropdownItem {
     fn default() -> Self {
         Self {
             text: String::from("DropdownItem"),
-            children: vec![],
+            children: Vec::new(),
             is_open: false,
             selected: 0,
         }
@@ -241,7 +244,7 @@ impl Dropdown<'_> {
                 DropdownAction::Click => {
                     self.fetched_text = match &self.header {
                         DropdownHeader::Search(input) => Some(input.input_string.clone()),
-                        DropdownHeader::Title(_) => None,
+                        DropdownHeader::Title(..) => None,
                     }
                 }
             }
@@ -285,7 +288,6 @@ impl Dropdown<'_> {
                         self.depth += 1;
                     }
                 } else {
-                    // if action == Dropdown::Click
                     self.fetched_text = Some(child.text.clone());
                 }
                 result = true;
@@ -298,7 +300,7 @@ impl Dropdown<'_> {
         }
     }
 
-    // Returns the text of the currently selected item (assuming it's not the root)
+    // Sets `self.fetched_text` to the text of the currently selected item (assuming it's not the root)
     pub(crate) fn click(&mut self) {
         self.alter_dropdown(DropdownAction::Click);
     }
@@ -379,16 +381,15 @@ impl Widget for Dropdown<'_> {
                 input.clone().render(area, buf);
             }
             DropdownHeader::Title(title) => {
-                // -1 because the text starts after the left border (so subtracting 1 ignores the right border too)
-                let width = (area.width - 1) as usize;
-                let title = format!("{: ^width$}", title).to_string();
-                let title: Text = title.into();
                 let mut block = Block::default()
                     .style(self.style)
                     .borders(Borders::ALL)
                     .title("▼")
                     .title_position(Position::Bottom)
                     .title_alignment(Alignment::Center);
+                
+                    let width = block.inner(area.clone()).width as usize;
+                    let title = format!("{: ^width$}", title).to_string();
                 if self.in_focus {
                     block = block.border_style(self.style.add_modifier(Modifier::REVERSED))
                 }
@@ -397,6 +398,13 @@ impl Widget for Dropdown<'_> {
                 title.render(area, buf);
             }
         };
+
+        #[derive(PartialEq)]
+        enum Direction {
+            Unknown,
+            Left,
+            Right,
+        }
 
         let window_resolution = (
             WINDOW_RESOLUTION
@@ -407,7 +415,9 @@ impl Widget for Dropdown<'_> {
                 .load(std::sync::atomic::Ordering::Acquire),
         );
         let window_midpoint = window_resolution.0 / 2;
-        let mut go_left: Option<bool> = None;
+        let mut direction = match self.header {
+            _ => Direction::Unknown,
+        };
         let mut render_dropdown = |dropdown: &dyn DropwdownTrait, style: Style| {
             let selected = dropdown.selected();
             let dimensions = dropdown.dimensions();
@@ -427,25 +437,26 @@ impl Widget for Dropdown<'_> {
                 )
             }
 
-            let x = if go_left.is_none() {
-                let midpoint = new_area.x + (list_width / 2);
-                if midpoint > window_midpoint {
-                    go_left = Some(true);
-                } else {
-                    go_left = Some(false);
+            let x = match direction {
+                Direction::Unknown => {
+                    let midpoint = new_area.x + (list_width / 2);
+                    if midpoint > window_midpoint {
+                        direction = Direction::Left;
+                    } else {
+                        direction = Direction::Right;
+                    }
+                    new_area.left()
                 }
-                new_area.left()
-            } else if go_left.unwrap() {
-                new_area.left() - list_width
-            } else {
-                new_area.right()
+                Direction::Left => new_area.left() - list_width,
+                Direction::Right => new_area.right(),
             };
+
             let y = new_area.bottom();
             let submenu_area = Rect::new(
                 x,
                 y,
                 list_width,
-                window_resolution.1.saturating_sub(y + 1).min(list_height)
+                window_resolution.1.saturating_sub(y + 1).min(list_height),
             );
 
             new_area = Rect::new(
@@ -471,7 +482,7 @@ impl Widget for Dropdown<'_> {
                 render_dropdown(menu, self.style);
                 let mut children = menu.get_children().to_owned();
                 let mut empty = children.is_empty();
-                let mut children_to_render = vec![];
+                let mut children_to_render = Vec::new();
 
                 while !empty {
                     // Setting empty as true here means the loop only continues if one of the children is open
@@ -526,7 +537,7 @@ impl FocusableWidget for Dropdown<'_> {
         self.in_focus = true;
         match &mut self.header {
             DropdownHeader::Search(input) => input.in_focus = true,
-            DropdownHeader::Title(_) => (),
+            DropdownHeader::Title(..) => (),
         };
     }
 }
@@ -576,7 +587,7 @@ impl EventHandler for Dropdown<'_> {
             DropdownHeader::Search(input) => {
                 input.handle_event(evt);
             }
-            DropdownHeader::Title(_) => (),
+            DropdownHeader::Title(..) => (),
         };
         None
     }

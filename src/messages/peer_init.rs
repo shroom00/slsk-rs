@@ -15,7 +15,7 @@ impl_message_trait!(
 
 define_message_to_send_and_receive!(PeerInit {
     username: String,
-    conn_type: ConnectionTypes,
+    connection_type: ConnectionTypes,
     token: u32,
 });
 impl_message_trait!(PeerInit < PeerInit, PeerInit > (MessageType::PeerInit(1)));

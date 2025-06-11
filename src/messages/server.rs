@@ -45,31 +45,31 @@ generate_struct!(_ReceiveLogin {
 // This is too complex of a macro to make (if even possible)
 // for a single use case
 impl UnpackFromBytes for _ReceiveLogin {
-    fn unpack_from_bytes(stream: &mut Vec<u8>) -> Self
+    fn unpack_from_bytes(stream: &mut Vec<u8>) -> Option<Self>
     where
         Self: Sized,
     {
-        let success = <bool>::unpack_from_bytes(stream);
+        let success = <bool>::unpack_from_bytes(stream)?;
 
-        if success {
+        Some(if success {
             _ReceiveLogin {
                 success,
-                greet: Some(<String>::unpack_from_bytes(stream)),
+                greet: Some(<String>::unpack_from_bytes(stream)?),
                 failure_reason: None,
-                ip: Some(<Ipv4Addr>::unpack_from_bytes(stream)),
-                hash: Some(<String>::unpack_from_bytes(stream)),
-                is_supporter: Some(<bool>::unpack_from_bytes(stream)),
+                ip: Some(<Ipv4Addr>::unpack_from_bytes(stream)?),
+                hash: Some(<String>::unpack_from_bytes(stream)?),
+                is_supporter: Some(<bool>::unpack_from_bytes(stream)?),
             }
         } else {
             _ReceiveLogin {
                 success,
                 greet: None,
-                failure_reason: Some(<String>::unpack_from_bytes(stream)),
+                failure_reason: Some(<String>::unpack_from_bytes(stream)?),
                 ip: None,
                 hash: None,
                 is_supporter: None,
             }
-        }
+        })
     }
 }
 
@@ -77,7 +77,7 @@ impl_message_trait!(Login < _SendLogin, _ReceiveLogin > (MessageType::Server(1))
 
 define_message_to_send!(SetWaitPort {
     port: u32,
-    use_obfuscation: bool,
+    _unknown: u32,
     obfuscated_port: u32,
 });
 impl_message_trait!(
@@ -92,8 +92,8 @@ define_message_to_receive!(_ReceiveGetPeerAddress {
     username: String,
     ip: Ipv4Addr,
     port: u32,
-    use_obfuscation: bool,
-    obfuscated_port: u32,
+    _unknown: u32,
+    obfuscated_port: u16,
 });
 
 pub struct GetPeerAddress;
@@ -116,12 +116,12 @@ generate_struct!(_ReceiveWatchUser {
     country_code: Option<String>,
 });
 impl UnpackFromBytes for _ReceiveWatchUser {
-    fn unpack_from_bytes(stream: &mut Vec<u8>) -> Self
+    fn unpack_from_bytes(stream: &mut Vec<u8>) -> Option<Self>
     where
         Self: Sized,
     {
-        let username = <String>::unpack_from_bytes(stream);
-        let exists = <bool>::unpack_from_bytes(stream);
+        let username = <String>::unpack_from_bytes(stream)?;
+        let exists = <bool>::unpack_from_bytes(stream)?;
         let status: Option<UserStatusCodes>;
         let avg_speed: Option<u32>;
         let upload_num: Option<u64>;
@@ -129,13 +129,13 @@ impl UnpackFromBytes for _ReceiveWatchUser {
         let dirs: Option<u32>;
         let country_code: Option<String>;
         if exists {
-            status = Some(<UserStatusCodes>::unpack_from_bytes(stream));
-            avg_speed = Some(<u32>::unpack_from_bytes(stream));
-            upload_num = Some(<u64>::unpack_from_bytes(stream));
-            files = Some(<u32>::unpack_from_bytes(stream));
-            dirs = Some(<u32>::unpack_from_bytes(stream));
+            status = Some(<UserStatusCodes>::unpack_from_bytes(stream)?);
+            avg_speed = Some(<u32>::unpack_from_bytes(stream)?);
+            upload_num = Some(<u64>::unpack_from_bytes(stream)?);
+            files = Some(<u32>::unpack_from_bytes(stream)?);
+            dirs = Some(<u32>::unpack_from_bytes(stream)?);
             if status != Some(UserStatusCodes::Offline) {
-                country_code = Some(<String>::unpack_from_bytes(stream));
+                country_code = Some(<String>::unpack_from_bytes(stream)?);
             } else {
                 country_code = None;
             }
@@ -147,7 +147,7 @@ impl UnpackFromBytes for _ReceiveWatchUser {
             dirs = None;
             country_code = None;
         };
-        _ReceiveWatchUser {
+        Some(_ReceiveWatchUser {
             username,
             exists,
             status,
@@ -156,7 +156,7 @@ impl UnpackFromBytes for _ReceiveWatchUser {
             files,
             dirs,
             country_code,
-        }
+        })
     }
 }
 
@@ -217,6 +217,7 @@ define_message_to_receive!(UserStats {
     num_of_dirs: u32,
 });
 #[rustfmt::skip]
+
 pub struct _ReceiveJoinRoom {
     pub room: String,
     pub usernames: Vec<String>,
@@ -229,23 +230,23 @@ pub struct _ReceiveJoinRoom {
 }
 
 impl UnpackFromBytes for _ReceiveJoinRoom {
-    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Self {
-        let room = <String>::unpack_from_bytes(bytes);
-        let usernames = <Vec<String>>::unpack_from_bytes(bytes);
-        let statuses = <Vec<UserStatusCodes>>::unpack_from_bytes(bytes);
-        let stats = <Vec<UserStats>>::unpack_from_bytes(bytes);
-        let slots_free = <Vec<u32>>::unpack_from_bytes(bytes);
-        let country_codes = <Vec<String>>::unpack_from_bytes(bytes);
+    fn unpack_from_bytes(bytes: &mut Vec<u8>) -> Option<Self> {
+        let room = <String>::unpack_from_bytes(bytes)?;
+        let usernames = <Vec<String>>::unpack_from_bytes(bytes)?;
+        let statuses = <Vec<UserStatusCodes>>::unpack_from_bytes(bytes)?;
+        let stats = <Vec<UserStats>>::unpack_from_bytes(bytes)?;
+        let slots_free = <Vec<u32>>::unpack_from_bytes(bytes)?;
+        let country_codes = <Vec<String>>::unpack_from_bytes(bytes)?;
         let owner: Option<String>;
         let operators: Option<Vec<String>>;
         if bytes.len() == 0 {
             owner = None;
             operators = None;
         } else {
-            owner = Some(<String>::unpack_from_bytes(bytes));
-            operators = Some(<Vec<String>>::unpack_from_bytes(bytes));
+            owner = Some(<String>::unpack_from_bytes(bytes)?);
+            operators = Some(<Vec<String>>::unpack_from_bytes(bytes)?);
         };
-        Self {
+        Some(Self {
             room,
             usernames,
             statuses,
@@ -254,7 +255,7 @@ impl UnpackFromBytes for _ReceiveJoinRoom {
             country_codes,
             owner,
             operators,
-        }
+        })
     }
 }
 pub struct JoinRoom;
@@ -313,7 +314,7 @@ define_message_to_receive!(_ReceiveConnectToPeer {
     port: u32,
     firewall_token: u32,
     privileged: bool,
-    use_obfuscation: bool,
+    _unknown: u32,
     obfuscated_port: u32,
 });
 
@@ -429,6 +430,8 @@ impl_message_trait!(
 // 57: UserInterests
 define_message_to_send!(_SendRoomList {});
 // This message is a mess, I hate it!
+//  ^^ Having Vec<(String, u32)> for owned/non-owned rooms makes more intuitive sense
+// Can be worked around by zipping the Vecs together
 #[rustfmt::skip]
 define_message_to_receive!(_ReceiveRoomList {
     rooms: Vec<String>,
@@ -479,7 +482,7 @@ impl_message_trait!(
 
 #[rustfmt::skip]
 define_message_to_receive!(ParentMinSpeed {
-    speed: u32, // Mbps?
+    speed: u32,
 });
 impl_message_trait!(
     ParentMinSpeed < IsntSent,
@@ -549,8 +552,7 @@ impl_message_trait!(
     WishListInterval > (MessageType::Server(104))
 );
 
-// TODO:
-// The following are deprecated but can be received.
+// TODO: The following are deprecated but can be received.
 // 110: SimilarUsers
 // 111: ItemRecommendations
 // 112: ItemSimilarUsers

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use crossterm::event::Event;
 use ratatui::{
     prelude::{Alignment, Buffer, Rect},
-    style::{Style, Styled, Modifier, Stylize},
+    style::{Style, Styled, Stylize},
     text::Text,
     widgets::{Block, Paragraph, Widget},
 };
@@ -21,7 +21,7 @@ where
     pub(crate) block: Block<'a>,
     /// `event` is the one that activates the button
     pub(crate) event: Event,
-    pub(crate) func: Rc<dyn for<'func> Fn (&Self, Args) -> Out>,
+    pub(crate) func: Rc<dyn for<'func> Fn(&Self, Args) -> Out>,
     pub(crate) disabled: bool,
 }
 
@@ -29,9 +29,7 @@ impl<'a, Args: Clone, Out: Clone> Button<'a, Args, Out> {
     pub(crate) fn set_label(&mut self, label: String) {
         self.label = label;
     }
-    pub(crate) fn set_event(&mut self, event: Event) {
-        self.event = event;
-    }
+
     pub(crate) fn disable(&mut self) {
         self.disabled = true;
     }
@@ -69,7 +67,8 @@ impl<'a, Args: Clone, Out: Clone> Styled for Button<'a, Args, Out> {
         self.label_style
     }
 
-    fn set_style(self, style: Style) -> Self::Item {
+    fn set_style<S: Into<Style>>(self, style: S) -> Self::Item {
+        let style: Style = style.into();
         Self {
             label: self.label,
             label_style: self.label_style.patch(style),
