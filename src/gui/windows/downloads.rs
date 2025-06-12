@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 pub(crate) use crossterm::event::Event;
 use ratatui::{
@@ -9,7 +9,7 @@ use tokio::sync::{broadcast::Sender, RwLock};
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
-    constants::{ByteSize, DownloadStatus, Percentage, Token},
+    constants::{ByteSize, DownloadStatus, Percentage},
     events::SLSKEvents,
     table::{ColumnData, TableItem, TableWidget},
 };
@@ -21,10 +21,6 @@ pub(crate) struct DownloadsWindow<'a> {
     title: String,
     focus_index: u8,
     downloads: TableWidget<'a>,
-    /// Key: u32 token
-    ///
-    /// Values: DownloadStatus, Percentage
-    pub(crate) download_state: HashMap<u32, (Arc<RwLock<DownloadStatus>>, Arc<RwLock<Percentage>>)>,
 }
 
 impl Default for DownloadsWindow<'_> {
@@ -53,7 +49,6 @@ impl Default for DownloadsWindow<'_> {
                 ]),
             ),
             focus_index: 0,
-            download_state: HashMap::new(),
         }
     }
 }
@@ -128,8 +123,12 @@ impl DownloadsWindow<'_> {
         {
             Some(root_item) => {
                 self.downloads.length += item_len;
-                let size = TryInto::<ByteSize>::try_into(root_item.content.remove(5)).unwrap();
-                root_item.content.insert(5, (size + filesize).into());
+                // Updating referenced statuses
+                root_item.content[3] += item.content[3].clone();
+                // Updating referenced percentages
+                root_item.content[4] += item.content[4].clone();
+                // Updating filesize
+                root_item.content[5] += item.content[5].clone();
                 root_item.children.push(item);
             }
             None => self.downloads.insert_item(
@@ -138,8 +137,8 @@ impl DownloadsWindow<'_> {
                         username.into(),
                         ColumnData::Empty,
                         ColumnData::Empty,
-                        DownloadStatus::Queued.into(),
-                        Percentage(0).into(),
+                        item.content[3].clone(),
+                        item.content[4].clone(),
                         filesize.into(),
                     ],
                     vec![item],
@@ -155,7 +154,6 @@ impl DownloadsWindow<'_> {
         folder: String,
         filename: String,
         filesize: ByteSize,
-        token: Token,
         status: Arc<RwLock<DownloadStatus>>,
         percentage: Arc<RwLock<Percentage>>,
     ) {
@@ -164,29 +162,20 @@ impl DownloadsWindow<'_> {
                 username.clone().into(),
                 folder.into(),
                 ColumnData::Empty,
-                DownloadStatus::Queued.into(),
-                Percentage(0).into(),
+                ColumnData::DownloadStatus(Arc::clone(&status)),
+                ColumnData::Percentages(vec![(Arc::clone(&percentage), filesize.0)]),
                 filesize.into(),
             ],
             vec![TableItem::new(
                 {
-                    let status = ColumnData::DownloadStatus(status);
                     let percentage = ColumnData::Percentage(percentage);
-                    self.download_state.insert(
-                        token.0,
-                        (
-                            status.get_cell_data::<DownloadStatus>().unwrap().to_owned(),
-                            percentage.get_cell_data::<Percentage>().unwrap().to_owned(),
-                        ),
-                    );
                     vec![
                         username.clone().into(),
                         ColumnData::Empty,
                         filename.into(),
-                        status,
+                        ColumnData::DownloadStatus(status),
                         percentage,
                         filesize.into(),
-                        token.into(),
                     ]
                 },
                 Vec::new(),
@@ -204,52 +193,48 @@ impl DownloadsWindow<'_> {
         files: Vec<(
             String,
             ByteSize,
-            Token,
             Arc<RwLock<DownloadStatus>>,
             Arc<RwLock<Percentage>>,
         )>,
     ) {
-        let total_filesize = ByteSize(files.iter().map(|(_, b, _, _, _)| b.0).sum());
+        let total_filesize = ByteSize(files.iter().map(|(_, b, _, _)| b.0).sum());
 
-        let item = TableItem::new(
+        let mut download_statuses = Vec::with_capacity(files.len());
+        let mut percentages = Vec::with_capacity(files.len());
+
+        let children = files
+            .into_iter()
+            .map(|(filename, filesize, status, percentage)| {
+                download_statuses.push(Arc::clone(&status));
+                percentages.push((Arc::clone(&percentage), filesize.0));
+
+                TableItem::new(
+                    vec![
+                        username.clone().into(),
+                        ColumnData::Empty,
+                        filename.into(),
+                        ColumnData::DownloadStatus(status),
+                        ColumnData::Percentage(percentage),
+                        filesize.into(),
+                    ],
+                    Vec::new(),
+                )
+                .open()
+            })
+            .collect();
+
+        let folder = TableItem::new(
             vec![
                 username.clone().into(),
                 folder.into(),
                 ColumnData::Empty,
-                DownloadStatus::Queued.into(),
-                Percentage(0).into(),
+                ColumnData::DownloadStatuses(download_statuses),
+                ColumnData::Percentages(percentages),
                 total_filesize.into(),
             ],
-            files
-                .into_iter()
-                .map(|(filename, filesize, token, status, percentage)| {
-                    let percentage = ColumnData::Percentage(percentage);
-                    let status = ColumnData::DownloadStatus(status);
-                    self.download_state.insert(
-                        token.0,
-                        (
-                            status.get_cell_data::<DownloadStatus>().unwrap().to_owned(),
-                            percentage.get_cell_data::<Percentage>().unwrap().to_owned(),
-                        ),
-                    );
-
-                    TableItem::new(
-                        vec![
-                            username.clone().into(),
-                            ColumnData::Empty,
-                            filename.into(),
-                            status,
-                            percentage,
-                            filesize.into(),
-                            token.into(),
-                        ],
-                        Vec::new(),
-                    )
-                    .open()
-                })
-                .collect(),
+            children,
         )
         .open();
-        self.add_item_helper(item, username, total_filesize);
+        self.add_item_helper(folder, username, total_filesize);
     }
 }

@@ -5,7 +5,7 @@ use ratatui::{
     text::Text,
     widgets::{block::Title, Block, Borders, Row, Table, Widget},
 };
-use std::ops::Range;
+use std::ops::{Add, AddAssign, Range};
 use std::{cmp::Ordering, sync::Arc};
 use tokio::sync::RwLock;
 use tui_input::{backend::crossterm::EventHandler, StateChanged};
@@ -13,11 +13,15 @@ use tui_input::{backend::crossterm::EventHandler, StateChanged};
 use crate::{
     constants::{ByteSize, DownloadStatus, Percentage, Token},
     gui::windows::{FocusableWidget, SLSKWidget, WidgetWithHints},
-    styles::STYLE_DEFAULT, utils::num_as_str,
+    styles::STYLE_DEFAULT,
+    utils::num_as_str,
 };
 
 // TODO: Implement own EventHandler trait
-pub(crate) const ITEM_INTERACTED: StateChanged = StateChanged { value: true, cursor: true };
+pub(crate) const ITEM_INTERACTED: StateChanged = StateChanged {
+    value: true,
+    cursor: true,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) enum ColumnData {
@@ -26,8 +30,89 @@ pub(crate) enum ColumnData {
     String(Arc<RwLock<String>>),
     ByteSize(Arc<RwLock<ByteSize>>),
     DownloadStatus(Arc<RwLock<DownloadStatus>>),
+    DownloadStatuses(Vec<Arc<RwLock<DownloadStatus>>>),
     Percentage(Arc<RwLock<Percentage>>),
+    // we use u64 because this is used for filesizes
+    Percentages(Vec<(Arc<RwLock<Percentage>>, u64)>),
     Token(u32),
+}
+
+impl Add for ColumnData {
+    type Output = ColumnData;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        if rhs == ColumnData::Empty {
+            return self;
+        }
+        match self {
+            ColumnData::Empty => rhs,
+            ColumnData::Usize(ref u) => {
+                if let ColumnData::Usize(u2) = rhs {
+                    (*u.blocking_read() + *u2.blocking_read()).into()
+                } else {
+                    unimplemented!("Usize variant can only be added to Usize and Empty, you tried to add {rhs:?}")
+                }
+            }
+            ColumnData::String(s) => {
+                if let ColumnData::String(s2) = rhs {
+                    (s.blocking_read().clone() + &*s2.blocking_read()).into()
+                } else {
+                    unimplemented!("String variant can only be added to String and Empty, you tried to add {rhs:?}")
+                }
+            }
+            ColumnData::ByteSize(b) => {
+                if let ColumnData::ByteSize(b2) = rhs {
+                    (*b.blocking_read() + *b2.blocking_read()).into()
+                } else {
+                    unimplemented!("ByteSize variant can only be added to ByteSize and Empty, you tried to add {rhs:?}")
+                }
+            }
+            ColumnData::DownloadStatus(d) => {
+                if let ColumnData::DownloadStatus(d2) = rhs {
+                    (*d.blocking_read() + *d2.blocking_read()).into()
+                } else {
+                    unimplemented!(
+                                "DownloadStatus variant can only be added to DownloadStatus and Empty, you tried to add {rhs:?}"
+                            )
+                }
+            }
+            ColumnData::DownloadStatuses(mut statuses) => {
+                if let ColumnData::DownloadStatuses(mut statuses2) = rhs {
+                    statuses.append(&mut statuses2);
+                    ColumnData::DownloadStatuses(statuses)
+                } else if let ColumnData::DownloadStatus(status) = rhs {
+                    statuses.push(status);
+                    ColumnData::DownloadStatuses(statuses)
+                } else {
+                    unimplemented!(
+                                "DownloadStatuses variant can only be added to DownloadStatuses, DownloadStatus and Empty, you tried to add {rhs:?}"
+                            )
+                }
+            }
+            ColumnData::Percentage(p) => {
+                if let ColumnData::Percentage(p2) = rhs {
+                    (*p.blocking_read() + *p2.blocking_read()).into()
+                } else {
+                    unimplemented!("Percentage variant can only be added to Percentage and Empty, you tried to add {rhs:?}")
+                }
+            }
+            ColumnData::Percentages(mut percentages) => {
+                if let ColumnData::Percentages(mut percentages2) = rhs {
+                    percentages.append(&mut percentages2);
+                    ColumnData::Percentages(percentages)
+                } else {
+                    unimplemented!("Percentages variant can only be added to Percentages and Empty, you tried to add {rhs:?}")
+                }
+            }
+            ColumnData::Token(_) => unimplemented!("Tokens can't be added!"),
+        }
+    }
+}
+
+impl AddAssign for ColumnData {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = self.clone() + rhs;
+    }
 }
 
 impl PartialEq for ColumnData {
@@ -39,11 +124,19 @@ impl PartialEq for ColumnData {
             (Self::DownloadStatus(l0), Self::DownloadStatus(r0)) => {
                 *l0.blocking_read() == *r0.blocking_read()
             }
+            (Self::DownloadStatuses(l0), Self::DownloadStatuses(r0)) => l0
+                .iter()
+                .zip(r0)
+                .all(|(s, s2)| *s.blocking_read() == *s2.blocking_read()),
             (Self::Percentage(l0), Self::Percentage(r0)) => {
                 *l0.blocking_read() == *r0.blocking_read()
             }
+            (Self::Percentages(l0), Self::Percentages(r0)) => l0
+                .iter()
+                .zip(r0)
+                .all(|((p, u), (p2, u2))| (u == u2) & (*p.blocking_read() == *p2.blocking_read())),
             (Self::Token(l0), Self::Token(r0)) => l0 == r0,
-            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+            _ => false,
         }
     }
 }
@@ -67,9 +160,17 @@ impl PartialOrd for ColumnData {
             (ColumnData::DownloadStatus(a), ColumnData::DownloadStatus(b)) => {
                 Some(a.blocking_read().cmp(&b.blocking_read()))
             }
+            (ColumnData::DownloadStatuses(_), ColumnData::DownloadStatuses(_)) => Some(
+                self.merge_download_statuses()
+                    .cmp(&Self::merge_download_statuses(&other)),
+            ),
             (ColumnData::Percentage(a), ColumnData::Percentage(b)) => {
                 Some(a.blocking_read().cmp(&b.blocking_read()))
             }
+            (ColumnData::Percentages(_), ColumnData::Percentages(_)) => Some(
+                self.merge_percentages()
+                    .cmp(&Self::merge_percentages(&other)),
+            ),
             (ColumnData::Token(a), ColumnData::Token(b)) => Some(a.cmp(&b)),
             // Fall back to string comparison for different variants
             _ => None,
@@ -79,20 +180,8 @@ impl PartialOrd for ColumnData {
 
 impl Ord for ColumnData {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            // Compare inner values directly when variants match
-            (ColumnData::Empty, ColumnData::Empty) => Ordering::Equal,
-            (ColumnData::Usize(a), ColumnData::Usize(b)) => a.blocking_read().cmp(&b.blocking_read()),
-            (ColumnData::String(a), ColumnData::String(b)) => a.blocking_read().cmp(&b.blocking_read()),
-            (ColumnData::ByteSize(a), ColumnData::ByteSize(b)) => a.blocking_read().cmp(&b.blocking_read()),
-            (ColumnData::DownloadStatus(a), ColumnData::DownloadStatus(b)) => {
-                a.blocking_read().cmp(&b.blocking_read())
-            }
-            (ColumnData::Percentage(a), ColumnData::Percentage(b)) => a.blocking_read().cmp(&b.blocking_read()),
-            (ColumnData::Token(a), ColumnData::Token(b)) => a.cmp(&b),
-            // Fall back to string comparison for different variants
-            _ => self.to_string().cmp(&other.to_string()),
-        }
+        self.partial_cmp(other)
+            .unwrap_or(self.to_string().cmp(&other.to_string()))
     }
 }
 
@@ -104,7 +193,9 @@ impl ToString for ColumnData {
             ColumnData::String(v) => v.blocking_read().to_string(),
             ColumnData::ByteSize(v) => v.blocking_read().to_string(),
             ColumnData::DownloadStatus(v) => v.blocking_read().to_string(),
+            ColumnData::DownloadStatuses(_) => self.merge_download_statuses().to_string(),
             ColumnData::Percentage(v) => v.blocking_read().to_string(),
+            ColumnData::Percentages(_) => self.merge_percentages().to_string(),
             ColumnData::Token(v) => v.to_string(),
         }
     }
@@ -155,49 +246,6 @@ impl From<Percentage> for ColumnData {
 impl From<Token> for ColumnData {
     fn from(value: Token) -> Self {
         ColumnData::Token(value.0)
-    }
-}
-
-impl ColumnData {
-    pub(crate) fn from_vec<T>(vec: Vec<T>) -> Vec<Self>
-    where
-        ColumnData: From<T>,
-    {
-        vec.into_iter().map(Self::from).collect()
-    }
-
-    pub(crate) fn get_cell_data<T: 'static>(&self) -> Option<&Arc<RwLock<T>>> {
-        match self {
-            ColumnData::Usize(v)
-                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<usize>() =>
-            {
-                Some(unsafe { &*(v as *const Arc<RwLock<usize>> as *const Arc<RwLock<T>>) })
-            }
-            ColumnData::String(v)
-                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() =>
-            {
-                Some(unsafe { &*(v as *const Arc<RwLock<String>> as *const Arc<RwLock<T>>) })
-            }
-            ColumnData::ByteSize(v)
-                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<ByteSize>() =>
-            {
-                Some(unsafe { &*(v as *const Arc<RwLock<ByteSize>> as *const Arc<RwLock<T>>) })
-            }
-            ColumnData::DownloadStatus(v)
-                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<DownloadStatus>() =>
-            {
-                Some(unsafe {
-                    &*(v as *const Arc<RwLock<DownloadStatus>> as *const Arc<RwLock<T>>)
-                })
-            }
-            ColumnData::Percentage(v)
-                if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Percentage>() =>
-            {
-                Some(unsafe { &*(v as *const Arc<RwLock<Percentage>> as *const Arc<RwLock<T>>) })
-            }
-            ColumnData::Token(_) => None,
-            _ => None,
-        }
     }
 }
 
@@ -287,6 +335,33 @@ impl TableItem {
     }
 }
 
+impl ColumnData {
+    fn merge_download_statuses(&self) -> DownloadStatus {
+        match self {
+            ColumnData::DownloadStatuses(statuses) => statuses
+                .iter()
+                .map(|s| *s.blocking_read())
+                .sum::<DownloadStatus>(),
+            _ => unimplemented!("Only use this on DownloadStatuses"),
+        }
+    }
+
+    fn merge_percentages(&self) -> Percentage {
+        match self {
+            ColumnData::Percentages(percentages) => {
+                let mut product: u128 = 0;
+                let mut total_weight: u128 = 0;
+                for (p, u) in percentages {
+                    let u = *u as u128;
+                    total_weight += u;
+                    product += p.blocking_read().0 as u128 * u;
+                }
+                Percentage((product / total_weight) as u8)
+            }
+            _ => unimplemented!("Only use this on Percentages"),
+        }
+    }
+}
 #[derive(Clone)]
 pub(crate) struct TableWidget<'a> {
     pub(crate) items: Vec<TableItem>,
@@ -618,18 +693,6 @@ impl TableWidget<'_> {
         }
 
         rows
-    }
-
-    fn get_cell_data<'a, T: 'static>(&self, cell: &'a ColumnData) -> Option<&'a Arc<RwLock<T>>> {
-        cell.get_cell_data()
-    }
-
-    // Type-safe access to cell data
-    #[allow(dead_code)]
-    pub(crate) fn get_current_cell_data<T: 'static>(&self, col: usize) -> Option<&Arc<RwLock<T>>> {
-        let item = self.current_row()?;
-        let cell = item.content.get(col)?;
-        self.get_cell_data(cell)
     }
 }
 

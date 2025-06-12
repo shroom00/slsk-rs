@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::{
-    constants::{ByteSize, ConnectionTypes, DownloadStatus, Percentage, Token},
+    constants::{ByteSize, ConnectionTypes, DownloadStatus, Percentage},
     messages::UserStats,
     FileSearchResponse,
 };
@@ -25,8 +25,8 @@ pub enum SLSKEvents {
     GetInfo ( String ),
     Connect { username: String, token: u32, connection_type: ConnectionTypes},
     QueueMessage { token: u32, message_bytes: Vec<u8> },
-    NewDownloads {username: String, folder: String, files: Vec<(String, ByteSize, Token)>, from_all: bool},
-    NewDownload {username: String, folder: String, filename: String, filesize: ByteSize, token: Token },
+    NewDownloads { username: String, folder: String, files: Vec<(String, ByteSize)>, from_all: bool },
+    NewDownload { username: String, folder: String, filename: String, filesize: ByteSize },
     UpdateDownload { filename: String, status: Arc<RwLock<DownloadStatus>>, percentage: Arc<RwLock<Percentage>> },
     UpdateDownloads { files: Vec<(String, Arc<RwLock<DownloadStatus>>, Arc<RwLock<Percentage>>)>, from_all: bool }
 }

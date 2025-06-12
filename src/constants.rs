@@ -1,6 +1,9 @@
-use std::ops::Add;
+use std::{iter::Sum, ops::Add};
 
-use crate::{packing::{PackToBytes, UnpackFromBytes}, utils::num_as_bytes};
+use crate::{
+    packing::{PackToBytes, UnpackFromBytes},
+    utils::num_as_bytes,
+};
 
 pub(crate) const MAJOR_VERSION: u32 = 160;
 pub(crate) const MINOR_VERSION: u32 = 1;
@@ -155,21 +158,21 @@ impl UnpackFromBytes for FileAttributeTypes {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DownloadStatus {
+    Failed,
     Queued,
     Starting,
     Downloading,
     Complete,
-    Failed,
 }
 
 impl DownloadStatus {
     pub(crate) fn str(&self) -> &'static str {
         match *self {
+            DownloadStatus::Failed => "Failed",
             DownloadStatus::Queued => "Queued",
             DownloadStatus::Starting => "Starting",
             DownloadStatus::Downloading => "Downloading",
             DownloadStatus::Complete => "Complete",
-            DownloadStatus::Failed => "Failed",
         }
     }
 }
@@ -177,6 +180,26 @@ impl DownloadStatus {
 impl ToString for DownloadStatus {
     fn to_string(&self) -> String {
         self.str().to_string()
+    }
+}
+
+impl Add for DownloadStatus {
+    type Output = DownloadStatus;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        if (self == DownloadStatus::Complete) & (rhs != DownloadStatus::Failed) {
+            rhs
+        } else if (rhs == DownloadStatus::Complete) | (rhs < self) {
+            self
+        } else {
+            rhs
+        }
+    }
+}
+
+impl Sum for DownloadStatus {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(DownloadStatus::Complete, |acc, status| acc + status)
     }
 }
 
@@ -196,12 +219,21 @@ impl Add for ByteSize {
         ByteSize(self.0 + rhs.0)
     }
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Percentage(pub(crate) u8);
 
 impl ToString for Percentage {
     fn to_string(&self) -> String {
         format!("{}%", self.0)
+    }
+}
+
+impl Add for Percentage {
+    type Output = Percentage;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(self.0 + rhs.0)
     }
 }
 

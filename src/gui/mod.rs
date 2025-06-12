@@ -1,7 +1,7 @@
 pub(crate) mod widgets;
 mod windows;
 use crate::utils::now_as_string;
-use crate::{log, DownloadStatus, Percentage};
+use crate::{DownloadStatus, Percentage};
 
 use crate::{
     events::SLSKEvents,
@@ -254,11 +254,10 @@ fn run_app<B: Backend>(
                     let downloads_window = app.get_mut_downloads();
                     let files: Vec<_> = files
                         .into_iter()
-                        .map(|(filename, filesize, token)| {
+                        .map(|(filename, filesize)| {
                             (
                                 filename,
                                 filesize,
-                                token,
                                 Arc::new(RwLock::new(DownloadStatus::Queued)),
                                 Arc::new(RwLock::new(Percentage(0))),
                             )
@@ -271,7 +270,7 @@ fn run_app<B: Backend>(
                         .send(SLSKEvents::UpdateDownloads {
                             files: files
                                 .into_iter()
-                                .map(|(filename, _, _, status, percentage)| {
+                                .map(|(filename, _, status, percentage)| {
                                     (format!("{folder}{filename}"), status, percentage)
                                 })
                                 .collect(),
@@ -282,7 +281,6 @@ fn run_app<B: Backend>(
                 SLSKEvents::NewDownload {
                     username,
                     folder,
-                    token,
                     filename,
                     filesize,
                 } => {
@@ -296,7 +294,6 @@ fn run_app<B: Backend>(
                         folder.clone(),
                         filename.clone(),
                         filesize,
-                        token,
                         status.clone(),
                         percentage.clone(),
                     );
@@ -401,7 +398,6 @@ fn run_app<B: Backend>(
                 }
             };
             window.perform_action(app.focused_widget, terminal_event, &write_queue);
-            log("finished handling termina; event");
         }
     }
 }

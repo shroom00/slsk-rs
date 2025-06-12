@@ -18,7 +18,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             toolchain: stable-x86_64-pc-windows-msvc
-            suffix: windows-x64
+            suffix: windows-x86_64
             ext: .exe
           - target: i686-pc-windows-msvc
             os: windows-latest
@@ -28,7 +28,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             toolchain: stable-x86_64-unknown-linux-gnu
-            suffix: linux-x64
+            suffix: linux-x86_64
             ext: ""
 
     runs-on: ${{ matrix.os }}

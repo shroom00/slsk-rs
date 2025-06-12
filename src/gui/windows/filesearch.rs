@@ -10,7 +10,7 @@ use tokio::sync::broadcast::Sender;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
-    constants::{ByteSize, ConnectionTypes, Token},
+    constants::{ByteSize, ConnectionTypes},
     events::SLSKEvents,
     gui::widgets::{
         dialog::Dialog,
@@ -109,7 +109,7 @@ impl FileSearchWindow<'_> {
                 if current_folder.is_some() && current_folder != Some(folder.clone()) {
                     let rows_for_folder = rows
                         .into_iter()
-                        .map(|row| TableItem::new(ColumnData::from_vec(row), Vec::new()).opened())
+                        .map(|row| TableItem::new(row, Vec::new()).opened())
                         .collect();
                     folder_rows.push(
                         TableItem::new(folder_header(current_folder), rows_for_folder).opened(),
@@ -135,16 +135,11 @@ impl FileSearchWindow<'_> {
             if !rows.is_empty() {
                 let rows_for_folder = rows
                     .into_iter()
-                    .map(|row| TableItem::new(ColumnData::from_vec(row), Vec::new()).opened())
+                    .map(|row| TableItem::new(row, Vec::new()).opened())
                     .collect();
 
-                folder_rows.push(
-                    TableItem::new(
-                        ColumnData::from_vec(folder_header(current_folder)),
-                        rows_for_folder,
-                    )
-                    .opened(),
-                );
+                folder_rows
+                    .push(TableItem::new(folder_header(current_folder), rows_for_folder).opened());
             }
 
             // Add to results if there are any folder rows
@@ -170,9 +165,8 @@ impl Default for FileSearchWindow<'_> {
                         (download_type.is_none(), download_type.is_some_and(|b| b));
                     let username = item.content[0].to_string();
 
-                    let queue_file = |file: &str, username: String, folder: &str| {
-                        let token = random::<u32>();
-
+                    let token = random::<u32>();
+                    let queue_file = |file: &str, folder: &str| {
                         let queue_upload = QueueUpload {
                             filename: format!("{folder}{file}"),
                         };
@@ -183,15 +177,6 @@ impl Default for FileSearchWindow<'_> {
                                 message_bytes,
                             })
                             .unwrap();
-
-                        write_queue
-                            .send(SLSKEvents::Connect {
-                                username,
-                                token,
-                                connection_type: ConnectionTypes::PeerToPeer,
-                            })
-                            .unwrap();
-                        token
                     };
 
                     if is_all | is_folder {
@@ -211,11 +196,10 @@ impl Default for FileSearchWindow<'_> {
                                         .iter()
                                         .map(|item| {
                                             let filename = item.content[4].to_string();
+                                            queue_file(&filename, &folder);
                                             let filesize =
                                                 item.content[5].clone().try_into().unwrap();
-                                            let token =
-                                                queue_file(&filename, username.clone(), &folder);
-                                            (filename, filesize, Token(token))
+                                            (filename, filesize)
                                         })
                                         .collect(),
                                     folder,
@@ -227,18 +211,24 @@ impl Default for FileSearchWindow<'_> {
                         let filename = item.content[4].to_string();
                         let filesize = item.content[5].clone().try_into().unwrap();
                         let folder = item.content[6].to_string();
-                        let username = username.to_string();
-                        let token = Token(queue_file(&filename, username.clone(), &folder));
+                        queue_file(&filename, &folder);
                         write_queue
                             .send(SLSKEvents::NewDownload {
-                                username,
+                                username: username.clone(),
                                 folder,
                                 filename,
                                 filesize,
-                                token,
                             })
                             .unwrap();
                     };
+
+                    write_queue
+                        .send(SLSKEvents::Connect {
+                            username,
+                            token,
+                            connection_type: ConnectionTypes::PeerToPeer,
+                        })
+                        .unwrap();
                 })),
                 None,
             ),

@@ -189,7 +189,7 @@ async fn handle_client(
     let peer_user_info_map = Arc::clone(&user_info_map);
     let writer_user_info_map = Arc::clone(&user_info_map);
 
-    let token_message_map = Arc::new(Mutex::new(HashMap::<u32, Vec<u8>>::new()));
+    let token_message_map = Arc::new(Mutex::new(HashMap::<u32, VecDeque<Vec<u8>>>::new()));
     let peer_token_message_map = Arc::clone(&token_message_map);
 
     let download_filename_map = Arc::new(Mutex::new(HashMap::<
@@ -537,7 +537,12 @@ async fn handle_client(
                             token,
                             message_bytes,
                         } => {
-                            token_message_map.lock().await.insert(token, message_bytes);
+                            token_message_map
+                                .lock()
+                                .await
+                                .entry(token)
+                                .or_default()
+                                .push_back(message_bytes);
                         }
                         SLSKEvents::Connect {
                             username,
@@ -549,11 +554,7 @@ async fn handle_client(
                                     .send(SLSKEvents::GetInfo(username.clone()))
                                     .unwrap();
                             };
-                            prompted_peers_list_writer.push((
-                                username.clone(),
-                                token,
-                                connection_type,
-                            ));
+                            prompted_peers_list_writer.push((username, token, connection_type));
                         }
                         SLSKEvents::GetInfo(username) => {
                             let _ = block_on(
@@ -571,29 +572,20 @@ async fn handle_client(
                             status,
                             percentage,
                         } => {
-                            let mut download_filename_map = download_filename_map.lock().await;
-                            let data = (status, percentage, None);
-                            if !download_filename_map.contains_key(&filename) {
-                                download_filename_map.insert(filename, [data].into());
-                            } else {
-                                download_filename_map
-                                    .get_mut(&filename)
-                                    .unwrap()
-                                    .push_back(data);
-                            }
+                            download_filename_map
+                                .lock()
+                                .await
+                                .entry(filename)
+                                .or_default()
+                                .push_back((status, percentage, None));
                         }
                         SLSKEvents::UpdateDownloads { files, from_all } => {
                             let mut download_filename_map = download_filename_map.lock().await;
                             for (filename, status, percentage) in files {
-                                let data = (status, percentage, Some(from_all));
-                                if !download_filename_map.contains_key(&filename) {
-                                    download_filename_map.insert(filename, [data].into());
-                                } else {
-                                    download_filename_map
-                                        .get_mut(&filename)
-                                        .unwrap()
-                                        .push_back(data);
-                                }
+                                download_filename_map
+                                    .entry(filename)
+                                    .or_default()
+                                    .push_back((status, percentage, Some(from_all)));
                             }
                         }
                     },
@@ -802,7 +794,6 @@ async fn handle_client(
                                 token,
                                 connection_type,
                             )) => {
-                                log(format!("started direct connection to {username} with token: {token} and connection type: {connection_type:?}"));
                                 tcp_queue.lock().await.push((
                                     username,
                                     token,
@@ -843,17 +834,10 @@ async fn handle_client(
                             };
 
                             tokio::task::spawn({
-                                log(format!("p2p connected to {username}"));
                                 let peer_task_write_queue = peer_task_write_queue.clone();
                                 let peer_download_filename_map =
                                     Arc::clone(&peer_download_filename_map);
                                 async move {
-                                    if let Some(message) =
-                                        temp_token_message_map.lock().await.remove(&token)
-                                    {
-                                        // currently only used for sending QueueUpload to new prompted connections
-                                        peer_stream.write_all(&message).await.unwrap();
-                                    }
                                     if connection_type == ConnectionTypes::FileTransfer {
                                         let offset = 0;
                                         let mut percentage = 0u8;
@@ -1009,9 +993,17 @@ async fn handle_client(
                                         }
                                         file_handle.flush().unwrap();
                                         let _ = peer_stream.shutdown().await;
-                                        log(format!("shutdown {username} in task {task_num}"));
                                         return;
                                     } else {
+                                        if let Some(messages) =
+                                            temp_token_message_map.lock().await.remove(&token)
+                                        {
+                                            for message in messages {
+                                                log(format!("sent qu to {token} {username}"));
+                                                peer_stream.write_all(&message).await.unwrap();
+                                            }
+                                        }
+
                                         loop {
                                             sleep(Duration::from_nanos(1)).await;
                                             let data = get_code_and_bytes_from_readable(
@@ -1058,7 +1050,7 @@ async fn handle_client(
                                                         }
                                                         MessageType::Peer(9) => {
                                                             let mut buf = Vec::new();
-                                                            log(format!("started decoding search results on {task_num} from {username}"));
+                                                            // log(format!("started decoding search results on {task_num} from {username}"));
                                                             match ZlibDecoder::new(&bytes[..])
                                                                 .read_to_end(&mut buf)
                                                             {
@@ -1092,16 +1084,6 @@ async fn handle_client(
                                                                     .unwrap();
                                                                     if *count < MAX_RESULTS
                                                                     {
-                                                                        if !response
-                                                                            .files
-                                                                            .is_empty()
-                                                                        {
-                                                                            log(format!(
-                                                                                "{}",
-                                                                                response.files[0]
-                                                                                    .filename
-                                                                            ))
-                                                                        };
                                                                         *count += num_files;
                                                                         peer_task_write_queue
                                                             .send(
@@ -1114,10 +1096,10 @@ async fn handle_client(
                                                                 };
                                                                 }
                                                                 Err(_) => {
-                                                                    break;
+                                                                    // break;
                                                                 }
                                                             };
-                                                            log(format!("finished decoding search results on {task_num} from {username}"));
+                                                            // log(format!("finished decoding search results on {task_num} from {username}"));
                                                             break;
                                                         }
                                                         MessageType::Peer(15) => {
@@ -1173,22 +1155,16 @@ async fn handle_client(
                                                                 if response.direction
                                                                 == TransferDirections::UploadToPeer
                                                             {
-                                                                println!("received transferequest from {} for {}", username, response.filename);
+                                                                log(format!("received transferequest from {} for {}", username, response.filename));
                                                                 let size =
                                                                     response.filesize.unwrap();
                                                                 {
-                                                                    let mut locked_file_info_map = file_info_map
+                                                                    file_info_map
                                                                         .lock()
-                                                                        .await;
-                                                                    let data = (
-                                                                                response.filename,
-                                                                                size,
-                                                                            );
-                                                                    if !locked_file_info_map.contains_key(&response.token) {
-                                                                        locked_file_info_map.insert(response.token, VecDeque::from([data]));
-                                                                    } else {
-                                                                        locked_file_info_map.get_mut(&response.token).unwrap().push_back(data);
-                                                                    };
+                                                                        .await
+                                                                        .entry(response.token)
+                                                                        .or_default()
+                                                                        .push_back((response.filename, size));
                                                                 }
                                                                 let _ = block_on(
                                                                 TransferResponse::async_write_to(
@@ -1201,7 +1177,7 @@ async fn handle_client(
                                                                 )
                                                                 .await,
                                                             );
-                                                                break;
+                                                                // break;
                                                             }
                                                             }
                                                         }
@@ -1303,7 +1279,7 @@ async fn handle_client(
                                             break;
                                         }
                                         let _ = peer_stream.shutdown().await;
-                                        log(format!("shut down {username} in task {task_num}"));
+                                        // log(format!("shut down {username} in task {task_num}"));
                                     }
                                 }
                             });
