@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "slsk-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "byte-unit",
