@@ -152,7 +152,7 @@ impl PartialOrd for ColumnData {
                 Some(a.blocking_read().cmp(&b.blocking_read()))
             }
             (ColumnData::String(a), ColumnData::String(b)) => {
-                Some(a.blocking_read().cmp(&b.blocking_read()))
+                Some(a.blocking_read().to_lowercase().cmp(&b.blocking_read().to_lowercase()))
             }
             (ColumnData::ByteSize(a), ColumnData::ByteSize(b)) => {
                 Some(a.blocking_read().cmp(&b.blocking_read()))
@@ -181,7 +181,7 @@ impl PartialOrd for ColumnData {
 impl Ord for ColumnData {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other)
-            .unwrap_or(self.to_string().cmp(&other.to_string()))
+            .unwrap_or(self.to_string().to_lowercase().cmp(&other.to_string().to_lowercase()))
     }
 }
 
