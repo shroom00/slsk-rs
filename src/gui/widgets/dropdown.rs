@@ -4,7 +4,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::Text,
     widgets::{
-        block::Position, Block, Borders, Clear, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+        block::Position, Block, Borders, Clear, List, ListItem, ListState, Paragraph,
+        StatefulWidget, Widget,
     },
 };
 use tui_input::backend::crossterm::EventHandler;
@@ -243,7 +244,10 @@ impl Dropdown<'_> {
                 }
                 DropdownAction::Click => {
                     self.fetched_text = match &self.header {
-                        DropdownHeader::Search(input) => Some(input.input_string.clone()),
+                        DropdownHeader::Search(input) => Some(match input.input_type {
+                            super::input::InputType::Standard => input.input.value().to_string(),
+                            super::input::InputType::Password(ref password) => password.clone(),
+                        }),
                         DropdownHeader::Title(..) => None,
                     }
                 }
@@ -387,9 +391,9 @@ impl Widget for Dropdown<'_> {
                     .title("▼")
                     .title_position(Position::Bottom)
                     .title_alignment(Alignment::Center);
-                
-                    let width = block.inner(area.clone()).width as usize;
-                    let title = format!("{: ^width$}", title).to_string();
+
+                let width = block.inner(area.clone()).width as usize;
+                let title = format!("{: ^width$}", title).to_string();
                 if self.in_focus {
                     block = block.border_style(self.style.add_modifier(Modifier::REVERSED))
                 }

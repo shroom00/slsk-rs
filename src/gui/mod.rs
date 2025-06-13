@@ -1,8 +1,9 @@
 pub(crate) mod widgets;
 mod windows;
+use crate::gui::widgets::input::InputType;
 use crate::styles::STYLE_DEFAULT;
 use crate::utils::now_as_string;
-use crate::{DownloadStatus, Percentage};
+use crate::{Config, DownloadStatus, Percentage};
 
 use crate::{
     events::SLSKEvents,
@@ -21,6 +22,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use ratatui::text::Masked;
 use tokio::sync::RwLock;
 use widgets::list::List;
 
@@ -28,7 +30,7 @@ use self::windows::filesearch::FileSearchWindow;
 use self::{
     widgets::dropdown::DropdownItem,
     windows::{
-        chatrooms::ChatroomsWindow, downloads::DownloadsWindow, login::LoginWindow,
+        chatrooms::ChatroomsWindow, login::LoginWindow, transfers::TransfersWindow,
         WidgetWithHints, Window,
     },
 };
@@ -51,11 +53,11 @@ static WINDOW_RESOLUTION: (AtomicU16, AtomicU16) = (AtomicU16::new(0), AtomicU16
 
 make_window_enum!(
     ('a),
-    LoginWindow get_mut_login 0 ('a),
-    ChatroomsWindow get_mut_chatrooms 1 ('a),
-    // FileSearchWindow get_mut_filesearch 2 ('a, 'b),
-    FileSearchWindow get_mut_filesearch 2 ('a),
-    DownloadsWindow get_mut_downloads 3 ('a),
+    LoginWindow LoginWindow get_mut_login 0 ('a),
+    ChatroomsWindow ChatroomsWindow get_mut_chatrooms 1 ('a),
+    FileSearchWindow FileSearchWindow get_mut_filesearch 2 ('a),
+    DownloadsWindow TransfersWindow get_mut_downloads 3 ('a),
+    UploadsWindow TransfersWindow get_mut_uploads 4 ('a),
 );
 
 #[derive(Clone)]
@@ -67,20 +69,7 @@ struct App<'a> {
     hints: Vec<(Event, String)>,
 }
 
-impl<'a> App<'a> {
-    fn render_current_window_on_frame(&self, f: &mut Frame<'_>, area: Rect) {
-        match self.get_current_window() {
-            WindowEnum::LoginWindow(widget) => f.render_widget(widget.to_owned(), area),
-            WindowEnum::ChatroomsWindow(widget) => f.render_widget(widget.to_owned(), area),
-            WindowEnum::FileSearchWindow(widget) => f.render_widget(widget.to_owned(), area),
-            WindowEnum::DownloadsWindow(widget) => f.render_widget(widget.to_owned(), area),
-        }
-    }
-
-    fn get_current_window(&self) -> &WindowEnum<'a> {
-        &self.windows[self.current_index as usize]
-    }
-
+impl App<'_> {
     fn get_window_count(&self) -> usize {
         self.windows.len()
     }
@@ -93,7 +82,7 @@ impl<'a> Default for App<'a> {
                 WindowEnum::LoginWindow(LoginWindow::default()),
                 WindowEnum::ChatroomsWindow(ChatroomsWindow::default()),
                 WindowEnum::FileSearchWindow(FileSearchWindow::default()),
-                WindowEnum::DownloadsWindow(DownloadsWindow::default()),
+                WindowEnum::DownloadsWindow(TransfersWindow::default()),
             ],
             current_index: 0,
             select_index: 0,
@@ -131,9 +120,10 @@ impl<'a> Default for App<'a> {
     }
 }
 
-pub fn main(
+pub(crate) fn main(
     write_queue: Sender<SLSKEvents>,
     gui_queue: Receiver<SLSKEvents>,
+    config: Arc<RwLock<Config>>,
 ) -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -142,9 +132,40 @@ pub fn main(
     let mut terminal = Terminal::new(backend)?;
 
     loop {
-        let app = App::default();
+        let mut app = App::default();
 
-        if !run_app(&mut terminal, app, gui_queue.resubscribe(), write_queue.clone())? {
+        {
+            let config = config.blocking_read();
+            let user = &config.user;
+            let login_window = app.get_mut_login();
+
+            if !user.name.is_empty() {
+                login_window.username_input.input = login_window
+                    .username_input
+                    .input
+                    .clone()
+                    .with_value(user.name.to_string());
+            }
+            if !user.password.is_empty() {
+                if let InputType::Password(ref mut password) =
+                    login_window.password_input.input_type
+                {
+                    *password = user.password.clone();
+                }
+                login_window.password_input.input = login_window
+                    .password_input
+                    .input
+                    .clone()
+                    .with_value(Masked::new(&user.password, '*').to_string());
+            }
+        }
+
+        if !run_app(
+            &mut terminal,
+            app,
+            gui_queue.resubscribe(),
+            write_queue.clone(),
+        )? {
             break;
         };
     }
@@ -182,7 +203,8 @@ fn run_app<B: Backend>(
 
                             login_window.logout_button.enable();
                             login_window.logout_button.set_label(String::from("LOGOUT"));
-                            login_window.logout_button = login_window.logout_button.clone().set_style(STYLE_DEFAULT);
+                            login_window.logout_button =
+                                login_window.logout_button.clone().set_style(STYLE_DEFAULT);
                         }
                         false => {
                             // Unwrapping is safe here because a failed login will always have a reason
@@ -329,6 +351,7 @@ fn run_app<B: Backend>(
             WindowEnum::LoginWindow(login_window) => login_window,
             WindowEnum::ChatroomsWindow(chatrooms_window) => chatrooms_window,
             WindowEnum::FileSearchWindow(file_search_window) => {
+                // TODO: create generic popup handling system?
                 // if the dialog is visible, we want to treat it as the main window
                 if file_search_window.dialog.visible {
                     &mut file_search_window.dialog
@@ -337,6 +360,7 @@ fn run_app<B: Backend>(
                 }
             }
             WindowEnum::DownloadsWindow(downloads_window) => downloads_window,
+            WindowEnum::UploadsWindow(transfers_window) => transfers_window,
         };
 
         if event::poll(Duration::from_millis(25)).unwrap_or(false) == false {

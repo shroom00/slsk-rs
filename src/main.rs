@@ -1,5 +1,6 @@
 #[macro_use]
 mod macros;
+mod config;
 mod constants;
 mod events;
 mod gui;
@@ -9,6 +10,7 @@ mod packing;
 mod styles;
 mod utils;
 
+use crate::config::{Config, CONFIG_PATH};
 use crate::constants::{DownloadStatus, Percentage};
 use crate::events::SLSKEvents;
 use crate::messages::*;
@@ -46,16 +48,28 @@ const LOGGING_ENABLED: bool = false;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("RUST_BACKTRACE", "1");
+
+    let mut config = Config::default();
+    let config_path = Path::new(CONFIG_PATH);
+    if !config.write_to_file(config_path, false) {
+        config = Config::read_from_file(config_path).expect("Failed to read config from file");
+    }
+    let config = Arc::new(RwLock::new(config));
+    let gui_config = Arc::clone(&config);
+    let connection_config = Arc::clone(&config);
+
     let (write_queue, read_queue) = channel::<SLSKEvents>(QUEUE_SIZE);
     let gui_read_queue = read_queue.resubscribe();
     let gui_write_queue = write_queue.clone();
 
-    thread::spawn(move || match gui::main(gui_write_queue, gui_read_queue) {
-        Ok(()) => {
-            return;
-        }
-        Err(e) => panic!("{e}"),
-    });
+    thread::spawn(
+        move || match gui::main(gui_write_queue, gui_read_queue, gui_config) {
+            Ok(()) => {
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        },
+    );
     let mut login_timeout: u64 = 15;
 
     let mut temp_receiver = read_queue.resubscribe();
@@ -77,10 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 quit
             };
 
+            let server_address = { connection_config.read().await.server.to_string() };
+
             // TODO: Make initial connection more robust, handling disconnection and displaying info in the UI properly (rather than printing)
             let stream: Result<TcpStream, Result<bool, Error>> = tokio::select! {
                 // Wait for the connection to complete
-                connect_result = TcpStream::connect("server.slsknet.org:2242") => match connect_result {
+                connect_result = TcpStream::connect(server_address) => match connect_result {
                     Ok(connect_result) => Ok(connect_result),
                     Err(e) => Err(Err(e)),
                 },
@@ -108,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         stream,
                         write_queue.clone(),
                         read_queue.resubscribe(),
+                        Arc::clone(&config),
                     ));
 
                     match handle.await {
@@ -159,6 +176,7 @@ async fn handle_client(
     stream: TcpStream,
     write_queue: Sender<SLSKEvents>,
     mut read_queue: Receiver<SLSKEvents>,
+    config: Arc<RwLock<Config>>,
 ) -> SLSKExitCode {
     let (mut reader, mut writer) = stream.into_split();
 
@@ -166,16 +184,16 @@ async fn handle_client(
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
 
     let my_port: u32 = listener.local_addr().unwrap().port().into();
-    let my_username = Arc::new(Mutex::new(None));
+    let my_username = Arc::new(RwLock::new(None));
 
     let quit = Arc::new(RwLock::new(false));
     // We have to clone the quit flag so it can be read in different tokio tasks
     let quit_write = Arc::clone(&quit);
 
-    let logged_in = Arc::new(Mutex::new(false));
+    let logged_in = Arc::new(RwLock::new(false));
     // The listener needs to know if we're logged in so it can ignore connections we may receive from previous sessions.
     // This can happen if you logout and login in quick succession.
-    let logged_in_listener = Arc::new(Mutex::new(false));
+    let logged_in_listener = Arc::clone(&logged_in);
 
     let indirect_peers_list_writer = Worker::<_ReceiveConnectToPeer>::new_fifo();
     let direct_peers_list_writer = Worker::<(TcpStream, String, u32, ConnectionTypes)>::new_fifo();
@@ -281,7 +299,7 @@ async fn handle_client(
                             drop(reader);
                             return SLSKExitCode::LoginFail;
                         }
-                        *logged_in.lock().await = true;
+                        *logged_in.write().await = true;
                     }
                 }
                 MessageType::Server(3) => {
@@ -455,15 +473,30 @@ async fn handle_client(
     });
 
     let server_write_task = tokio::spawn({
-        let my_username = my_username.clone();
+        let my_username = Arc::clone(&my_username);
         async move {
+            {
+                let config = config.read().await;
+                let username = &config.user.name;
+                let password = &config.user.password;
+                if config.server.auto_connect & !username.is_empty() & !password.is_empty() {
+                    let login_info = _SendLogin::new(username.to_owned(), password.to_owned());
+                    let _ = block_on(Login::async_write_to(&mut writer, login_info).await);
+                }
+            };
             loop {
                 sleep(Duration::from_nanos(1)).await;
                 let event = read_queue.recv().await;
                 match event {
                     Ok(event) => match event {
                         SLSKEvents::TryLogin { username, password } => {
-                            *my_username.lock().await = Some(username.clone());
+                            *my_username.write().await = Some(username.clone());
+                            {
+                                let mut locked_config = config.write().await;
+                                locked_config.user.name = username.clone();
+                                locked_config.user.password = password.clone();
+                                locked_config.write_to_file(Path::new(CONFIG_PATH), true);
+                            }
                             let login_info = _SendLogin::new(username, password);
                             let _ = block_on(Login::async_write_to(&mut writer, login_info).await);
                         }
@@ -612,7 +645,7 @@ async fn handle_client(
             match listener.accept().await {
                 Ok((mut peer_stream, _peer_addr)) => {
                     // If we receive unhandled connection requests from the previous session
-                    if !*logged_in_listener.lock().await {
+                    if !*logged_in_listener.read().await {
                         let _ = peer_stream.shutdown();
                         continue;
                     }
@@ -702,7 +735,7 @@ async fn handle_client(
                                                         &mut peer_stream,
                                                         PeerInit {
                                                             username: my_username
-                                                                .lock()
+                                                                .read()
                                                                 .await
                                                                 .clone()
                                                                 .unwrap(),

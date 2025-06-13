@@ -9,21 +9,19 @@ use tokio::sync::{broadcast::Sender, RwLock};
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
-    constants::{ByteSize, DownloadStatus, Percentage},
-    events::SLSKEvents,
-    table::{ColumnData, TableItem, TableWidget},
+    constants::{ByteSize, DownloadStatus, Percentage}, events::SLSKEvents, table::{ColumnData, TableItem, TableWidget}
 };
 
 use super::{FocusableWidget, SLSKWidget, WidgetWithHints, Window};
 
 #[derive(Clone)]
-pub(crate) struct DownloadsWindow<'a> {
+pub(crate) struct TransfersWindow<'a> {
     title: String,
     focus_index: u8,
     downloads: TableWidget<'a>,
 }
 
-impl Default for DownloadsWindow<'_> {
+impl Default for TransfersWindow<'_> {
     fn default() -> Self {
         Self {
             title: String::from(" Downloads "),
@@ -53,7 +51,7 @@ impl Default for DownloadsWindow<'_> {
     }
 }
 
-impl Widget for DownloadsWindow<'_> {
+impl Widget for TransfersWindow<'_> {
     fn render(mut self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -69,7 +67,7 @@ impl Widget for DownloadsWindow<'_> {
     }
 }
 
-impl WidgetWithHints for DownloadsWindow<'_> {
+impl WidgetWithHints for TransfersWindow<'_> {
     fn get_hints(&self) -> Vec<(Event, String)> {
         self.get_widget(self.focus_index)
             .and_then(|w| Some(w.get_hints()))
@@ -77,7 +75,7 @@ impl WidgetWithHints for DownloadsWindow<'_> {
     }
 }
 
-impl Window<'_> for DownloadsWindow<'_> {
+impl Window<'_> for TransfersWindow<'_> {
     fn get_title(&self) -> String {
         self.title.clone()
     }
@@ -112,7 +110,7 @@ impl Window<'_> for DownloadsWindow<'_> {
     }
 }
 
-impl DownloadsWindow<'_> {
+impl TransfersWindow<'_> {
     fn add_item_helper(&mut self, item: TableItem, username: String, filesize: ByteSize) {
         let item_len = item.length(self.downloads.filter().as_deref().map(|f| f.as_str()));
         match self

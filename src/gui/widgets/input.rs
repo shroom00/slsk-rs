@@ -3,8 +3,8 @@ use std::fmt::Display;
 use crossterm::event::Event;
 use ratatui::{
     prelude::{Buffer, Rect},
-    style::{Style, Styled, Stylize, Modifier},
-    text::{Line, Span, Masked},
+    style::{Modifier, Style, Styled, Stylize},
+    text::{Line, Masked, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
 use tui_input::{backend::crossterm::EventHandler, Input as TuiInput};
@@ -14,11 +14,10 @@ use crate::{
     styles::STYLE_DEFAULT,
 };
 
-
 #[derive(Clone)]
 pub(crate) enum InputType {
     Standard,
-    Password,
+    Password(String),
 }
 
 impl Default for InputType {
@@ -31,7 +30,6 @@ impl Default for InputType {
 pub(crate) struct Input<'a> {
     pub(crate) input: TuiInput,
     pub(crate) input_type: InputType,
-    pub(crate) input_string: String,
     pub(crate) style: Style,
     pub(crate) block: Block<'a>,
     pub(crate) in_focus: bool,
@@ -51,28 +49,27 @@ impl Input<'_> {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.input_string = String::new();
         self.input.reset();
     }
 }
 
 impl EventHandler for Input<'_> {
     fn handle_event(&mut self, evt: &Event) -> Option<tui_input::StateChanged> {
-        let out = self.input.handle_event(evt);
-        let mut temp_input = TuiInput::new(self.input_string.clone());
-        temp_input.handle_event(evt);
-        self.input_string = temp_input.value().to_string();
         match self.input_type {
-            InputType::Standard => (),
-            InputType::Password => {
+            InputType::Standard => {self.input.handle_event(evt);},
+            InputType::Password(ref mut password) => {
+                let mut temp_input = TuiInput::new(password.clone());
+                temp_input.handle_event(evt);
+                let new_password = temp_input.value();
+                *password = new_password.to_string();
                 self.input = self
                     .input
                     .clone()
-                    .with_value(Masked::new(&self.input_string, '*').to_string())
-                    .with_cursor(self.input.visual_cursor());
+                    .with_value(Masked::new(new_password, '*').to_string())
+                    .with_cursor(temp_input.visual_cursor());
             }
         };
-        out
+        None
     }
 }
 
@@ -87,7 +84,6 @@ impl Default for Input<'_> {
         Self {
             input: Default::default(),
             input_type: Default::default(),
-            input_string: Default::default(),
             style: STYLE_DEFAULT,
             block: Block::default().borders(Borders::ALL).on_black(),
             in_focus: false,
@@ -115,7 +111,8 @@ impl Widget for Input<'_> {
         } else if self.in_focus {
             line = Line::from(vec![
                 Span::from(&raw_text[..indices[cursor].0]),
-                Span::from(indices[cursor].1.to_string()).set_style(self.style.add_modifier(Modifier::REVERSED)),
+                Span::from(indices[cursor].1.to_string())
+                    .set_style(self.style.add_modifier(Modifier::REVERSED)),
                 Span::from(if cursor + 1 >= indices.len() {
                     ""
                 } else {
@@ -142,7 +139,10 @@ impl WidgetWithHints for Input<'_> {
 
 impl FocusableWidget for Input<'_> {
     fn make_focused(&mut self) {
-        self.block = self.block.clone().title_style(self.style.add_modifier(Modifier::REVERSED));
+        self.block = self
+            .block
+            .clone()
+            .title_style(self.style.add_modifier(Modifier::REVERSED));
         self.in_focus = true;
     }
 }

@@ -289,7 +289,8 @@ impl Window<'_> for FileSearchWindow<'_> {
         match focus_index {
             0 => {
                 if event == Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
-                    let query = self.search_bar.input_string.clone();
+                    // this is guaranteed not to be a password input
+                    let query = self.search_bar.input.value().to_string();
                     if !self.search_tabs.tabs.contains(&query) {
                         let _ = write_queue.send(SLSKEvents::FileSearch {
                             query: query.clone(),

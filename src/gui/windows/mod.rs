@@ -15,7 +15,7 @@ use crate::events::SLSKEvents;
 pub(crate) mod chatrooms;
 pub(crate) mod filesearch;
 pub(crate) mod login;
-pub(crate) mod downloads;
+pub(crate) mod transfers;
 
 /// A widget that has assosciated shortcut hints
 pub(crate) trait WidgetWithHints: Widget {

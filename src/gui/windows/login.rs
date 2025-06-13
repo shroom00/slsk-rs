@@ -36,7 +36,7 @@ impl Default for LoginWindow<'_> {
             username_input: Input::default().title(String::from("Username")),
             password_input: Input::default()
                 .title(String::from("Password"))
-                .input_type(InputType::Password),
+                .input_type(InputType::Password(String::new())),
             login_button: Button {
                 label: String::from("LOGIN"),
                 label_style: STYLE_DEFAULT,
@@ -132,8 +132,12 @@ impl Window<'_> for LoginWindow<'_> {
                 (self.login_button.func)(
                     &self.login_button,
                     (
-                        self.username_input.input_string.clone(),
-                        self.password_input.input_string.clone(),
+                        self.username_input.input.value().to_string(),
+                        if let InputType::Password(ref password) = self.password_input.input_type {
+                            password.clone()
+                        } else {
+                            unimplemented!()
+                        },
                         write_queue.clone(),
                     ),
                 );

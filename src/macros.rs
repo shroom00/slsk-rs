@@ -200,21 +200,32 @@ macro_rules! make_focused {
 ///
 /// **Usage (repeatable):**
 /// ```
-/// WindowType get_mut_func 0,
+/// WindowName WindowType get_mut_func 0,
 /// ```
 /// This assumes `App.windows` contains `WindowEnum::WindowType(_)` at index 0.
 macro_rules! make_window_enum {
     (
         ($($all_lifetimes:tt)+),
         $(
-            $type:ident $get_mut_func:ident $num:literal ($($lifetime:tt)+),
+            $name:ident $type:ident $get_mut_func:ident $num:literal ($($lifetime:tt)+),
         )+
     ) => {
         #[derive(Clone)]
         enum WindowEnum<$($all_lifetimes)+> {
             $(
-                $type($type<$($lifetime)+>),
+                $name($type<$($lifetime)+>),
             )+
+        }
+
+        impl App<'_> {
+            fn render_current_window_on_frame(&self, f: &mut Frame<'_>, area: Rect) {
+                match &self.windows[self.current_index as usize] {
+                    $(
+                        WindowEnum::$name(widget) => f.render_widget(widget.to_owned(), area),
+                    )+
+                }
+            }
+
         }
 
         #[allow(dead_code)]
@@ -222,7 +233,7 @@ macro_rules! make_window_enum {
             fn get_title(&self) -> String {
                 match self {
                     $(
-                        WindowEnum::$type(window) => window.get_title(),
+                        WindowEnum::$name(window) => window.get_title(),
                     )+
                 }
             }
@@ -230,7 +241,7 @@ macro_rules! make_window_enum {
             fn get_hints(&self) -> Vec<(Event, String)> {
                 match self {
                     $(
-                        WindowEnum::$type(window) => window.get_hints(),
+                        WindowEnum::$name(window) => window.get_hints(),
                     )+
                 }
             }
@@ -238,7 +249,7 @@ macro_rules! make_window_enum {
             fn number_of_widgets(&self) -> u8 {
                 match self {
                     $(
-                        WindowEnum::$type(window) => window.number_of_widgets(),
+                        WindowEnum::$name(window) => window.number_of_widgets(),
                     )+
                 }
             }
@@ -246,7 +257,7 @@ macro_rules! make_window_enum {
             fn get_focused_index(&self) -> u8 {
                 match self {
                     $(
-                        WindowEnum::$type(window) => window.get_focused_index(),
+                        WindowEnum::$name(window) => window.get_focused_index(),
                     )+
                 }
             }
@@ -254,7 +265,7 @@ macro_rules! make_window_enum {
             fn set_focused_index(&mut self, index: u8) {
                 match self {
                     $(
-                        WindowEnum::$type(window) => window.set_focused_index(index),
+                        WindowEnum::$name(window) => window.set_focused_index(index),
                     )+
                 }
             }
@@ -262,7 +273,7 @@ macro_rules! make_window_enum {
             fn perform_action(&mut self, focus_index: u8, event: Event, write_queue: &Sender<SLSKEvents>) {
                 match self {
                     $(
-                        WindowEnum::$type(window) => window.perform_action(focus_index, event, &write_queue),
+                        WindowEnum::$name(window) => window.perform_action(focus_index, event, &write_queue),
                     )+
                 }
             }
@@ -272,7 +283,7 @@ macro_rules! make_window_enum {
             $(
                 fn $get_mut_func<'get>(&'get mut self) -> &'get mut $type<$($lifetime)+> {
                     match self.windows[$num] {
-                        WindowEnum::$type(ref mut window) => window,
+                        WindowEnum::$name(ref mut window) => window,
                         _ => unimplemented!()
                     }
                 }

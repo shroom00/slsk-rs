@@ -227,7 +227,8 @@ impl Window<'_> for ChatroomsWindow<'_> {
                             let _ = write_queue.send(SLSKEvents::ChatroomMessage {
                                 room: room.to_string(),
                                 username: None,
-                                message: self.message_input.input_string.clone(),
+                                // we don't need to handle password values, because message_input will never be a password input
+                                message: self.message_input.input.value().to_string(),
                             });
                             self.message_input.clear();
                             None
