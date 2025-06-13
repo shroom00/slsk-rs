@@ -1,5 +1,6 @@
 pub(crate) mod widgets;
 mod windows;
+use crate::styles::STYLE_DEFAULT;
 use crate::utils::now_as_string;
 use crate::{DownloadStatus, Percentage};
 
@@ -140,9 +141,13 @@ pub fn main(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let app = App::default();
+    loop {
+        let app = App::default();
 
-    run_app(&mut terminal, app, gui_queue, write_queue)?;
+        if !run_app(&mut terminal, app, gui_queue.resubscribe(), write_queue.clone())? {
+            break;
+        };
+    }
 
     disable_raw_mode()?;
     execute!(
@@ -160,7 +165,7 @@ fn run_app<B: Backend>(
     mut app: App,
     mut gui_queue: Receiver<SLSKEvents>,
     write_queue: Sender<SLSKEvents>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     loop {
         let gui_event = gui_queue.try_recv().ok();
         match gui_event {
@@ -174,6 +179,10 @@ fn run_app<B: Backend>(
                             label = String::from("LOGGED IN");
                             style = STYLE_DISABLED_DEFAULT;
                             login_window.login_button.disable();
+
+                            login_window.logout_button.enable();
+                            login_window.logout_button.set_label(String::from("LOGOUT"));
+                            login_window.logout_button = login_window.logout_button.clone().set_style(STYLE_DEFAULT);
                         }
                         false => {
                             // Unwrapping is safe here because a failed login will always have a reason
@@ -184,7 +193,7 @@ fn run_app<B: Backend>(
                     login_window.login_button.set_label(label);
                     login_window.login_button = login_window.login_button.clone().set_style(style);
                 }
-                SLSKEvents::Quit => return Ok(()),
+                SLSKEvents::Quit { restart } => return Ok(restart),
                 SLSKEvents::TryLogin { .. } => (),
                 SLSKEvents::RoomList {
                     mut rooms_and_num_of_users,
@@ -371,8 +380,8 @@ fn run_app<B: Backend>(
             } else if key.modifiers == (KeyModifiers::SHIFT) {
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = write_queue.send(SLSKEvents::Quit);
-                        return Ok(());
+                        let _ = write_queue.send(SLSKEvents::Quit { restart: false });
+                        return Ok(false);
                     }
                     KeyCode::BackTab => {
                         // previous widget

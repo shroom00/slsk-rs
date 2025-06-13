@@ -33,6 +33,10 @@ impl<'a, Args: Clone, Out: Clone> Button<'a, Args, Out> {
     pub(crate) fn disable(&mut self) {
         self.disabled = true;
     }
+
+    pub(crate) fn enable(&mut self) {
+        self.disabled = false;
+    }
 }
 
 impl<Args: Clone, Out: Clone> Widget for Button<'_, Args, Out> {

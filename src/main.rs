@@ -61,82 +61,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut temp_receiver = read_queue.resubscribe();
 
     loop {
-        let should_quit = async {
-            let mut quit = false;
-            while !quit {
-                let event = temp_receiver.recv().await;
-                quit = match event {
-                    Ok(event) => match event {
-                        SLSKEvents::Quit => true,
-                        _ => false,
-                    },
-                    Err(_) => false,
-                };
-            }
-            quit
-        };
-
-        // TODO: Make initial connection more robust, handling disconnection and displaying info in the UI properly (rather than printing)
-        let stream: Result<TcpStream, Error> = tokio::select! {
-            // Wait for the connection to complete
-            connect_result = TcpStream::connect("server.slsknet.org:2242") => connect_result,
-            // Wait for should_quit to complete
-            quit = should_quit => {
-                if quit {
-                    Err(ErrorKind::Other.into())
-                } else {unimplemented!()}
-            }
-        };
-        match stream {
-            Ok(stream) => {
-                let sock_ref = SockRef::from(&stream);
-                // These specific settings are based on nicotine+'s settings
-                let mut ka = TcpKeepalive::new()
-                    .with_time(Duration::from_secs(10))
-                    .with_interval(Duration::from_secs(2));
-                ka = keepalive_add_retries(ka);
-                sock_ref.set_tcp_keepalive(&ka)?;
-                // TODO: Set the number of TCP pings allowed before the connection is assumed to be dead (should be 10)
-                // on platforms where it's not supported by socket2 (e.g. Windows)
-                // Not 100% sure this is actually possible as it's an OS limitation, but I imagine it could be implemented manually.
-
-                let handle = tokio::spawn(handle_client(
-                    stream,
-                    write_queue.clone(),
-                    read_queue.resubscribe(),
-                ));
-
-                match handle.await {
-                    Ok(slskexit) => match slskexit {
-                        SLSKExitCode::LoginFail => (),
-                        _ => {
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        panic!("{e}");
-                    }
-                };
-            }
-            Err(e) => {
-                let kind = e.kind();
-
-                if kind == ErrorKind::Other {
-                    // If we receive SLSKEvent::Quit from the TUI
-                    break;
-                } else if e.raw_os_error() == Some(11001) {
-                    // If "no such host is known" (Not connected to the internet?)
-                    continue;
+        if !'outer: loop {
+            let should_restart = async {
+                let mut quit = None;
+                while quit.is_none() {
+                    let event = temp_receiver.recv().await;
+                    quit = match event {
+                        Ok(event) => match event {
+                            SLSKEvents::Quit { restart } => Some(restart),
+                            _ => None,
+                        },
+                        Err(_) => None,
+                    };
                 }
-                println!(
-                    "stream fail: {e}, sleeping for {login_timeout} seconds. {:?}",
-                    e
-                );
-                Timer::after(Duration::from_secs(login_timeout)).await;
-                println!("sleep finished");
-                login_timeout *= 2;
-            }
-        };
+                quit
+            };
+
+            // TODO: Make initial connection more robust, handling disconnection and displaying info in the UI properly (rather than printing)
+            let stream: Result<TcpStream, Result<bool, Error>> = tokio::select! {
+                // Wait for the connection to complete
+                connect_result = TcpStream::connect("server.slsknet.org:2242") => match connect_result {
+                    Ok(connect_result) => Ok(connect_result),
+                    Err(e) => Err(Err(e)),
+                },
+                // Wait for should_restart to complete
+                restart = should_restart => {
+                    if let Some(restart) = restart {
+                        Err(Ok(restart))
+                    } else {unimplemented!()}
+                }
+            };
+            match stream {
+                Ok(stream) => {
+                    let sock_ref = SockRef::from(&stream);
+                    // These specific settings are based on nicotine+'s settings
+                    let mut ka = TcpKeepalive::new()
+                        .with_time(Duration::from_secs(10))
+                        .with_interval(Duration::from_secs(2));
+                    ka = keepalive_add_retries(ka);
+                    sock_ref.set_tcp_keepalive(&ka)?;
+                    // TODO: Set the number of TCP pings allowed before the connection is assumed to be dead (should be 10)
+                    // on platforms where it's not supported by socket2 (e.g. Windows)
+                    // Not 100% sure this is actually possible as it's an OS limitation, but I imagine it could be implemented manually.
+
+                    let handle = tokio::spawn(handle_client(
+                        stream,
+                        write_queue.clone(),
+                        read_queue.resubscribe(),
+                    ));
+
+                    match handle.await {
+                        Ok(slskexit) => match slskexit {
+                            SLSKExitCode::LoginFail => (),
+                            _ => {
+                                break true;
+                            }
+                        },
+                        Err(e) => {
+                            panic!("{e}");
+                        }
+                    };
+                }
+                Err(Ok(restart)) => break 'outer restart,
+                Err(Err(e)) => {
+                    if e.raw_os_error() == Some(11001) {
+                        // If "no such host is known" (Not connected to the internet?)
+                        continue;
+                    }
+                    println!(
+                        "stream fail: {e}, sleeping for {login_timeout} seconds. {:?}",
+                        e
+                    );
+                    Timer::after(Duration::from_secs(login_timeout)).await;
+                    println!("sleep finished");
+                    login_timeout *= 2;
+                }
+            };
+        } {
+            break;
+        }
     }
     Ok(())
 }
@@ -146,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 enum SLSKExitCode {
     Ok,
     LoginFail,
+    Restart,
     JoinError(JoinError),
     OtherLogin,
     IoError(Error),
@@ -164,9 +168,8 @@ async fn handle_client(
     let my_port: u32 = listener.local_addr().unwrap().port().into();
     let my_username = Arc::new(Mutex::new(None));
 
-    let quit = Arc::new(Mutex::new(false));
+    let quit = Arc::new(RwLock::new(false));
     // We have to clone the quit flag so it can be read in different tokio tasks
-    let quit_read = Arc::clone(&quit);
     let quit_write = Arc::clone(&quit);
 
     let logged_in = Arc::new(Mutex::new(false));
@@ -258,7 +261,7 @@ async fn handle_client(
     // Spawn separate tasks for reading and writing
     let server_read_task = tokio::spawn(async move {
         loop {
-            if *quit_read.lock().await {
+            if *quit.read().await {
                 return SLSKExitCode::Ok;
             };
             let (code, mut bytes) =
@@ -464,10 +467,14 @@ async fn handle_client(
                             let login_info = _SendLogin::new(username, password);
                             let _ = block_on(Login::async_write_to(&mut writer, login_info).await);
                         }
-                        SLSKEvents::Quit => {
-                            *quit_write.lock().await = true;
+                        SLSKEvents::Quit { restart } => {
+                            *quit_write.write().await = true;
                             let _ = writer.shutdown();
-                            return SLSKExitCode::Ok;
+                            return if restart {
+                                SLSKExitCode::Ok
+                            } else {
+                                SLSKExitCode::Restart
+                            };
                         }
                         SLSKEvents::LoginResult { success, .. } => {
                             if success {
@@ -590,7 +597,7 @@ async fn handle_client(
                         }
                     },
                     Err(_) => {
-                        *quit_write.lock().await = true;
+                        *quit_write.write().await = true;
                         let _ = writer.shutdown();
                         return SLSKExitCode::Ok;
                     }
@@ -1306,7 +1313,10 @@ async fn handle_client(
 
     let write_result = server_write_task.await;
     match write_result {
-        Ok(exit) => exit,
+        Ok(exit) => {
+            println!("handle_client finished!");
+            exit
+        }
         Err(e) => SLSKExitCode::JoinError(e),
     }
 }

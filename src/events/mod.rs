@@ -13,7 +13,7 @@ use crate::{
 pub enum SLSKEvents {
     TryLogin { username: String, password: String },
     LoginResult { success: bool, reason: Option<String> },
-    Quit,
+    Quit { restart: bool },
     RoomList { rooms_and_num_of_users: Vec<(String, u32)> },
     /// Think of `private` like a boolean. 0 means public, anything else means private.
     JoinRoom { room: String, private: u32 },

@@ -14,7 +14,7 @@ use crate::{
         button::Button,
         input::{Input, InputType},
     },
-    styles::STYLE_DEFAULT,
+    styles::{STYLE_DEFAULT, STYLE_DISABLED_DEFAULT},
 };
 
 use super::{FocusableWidget, SLSKWidget, WidgetWithHints, Window};
@@ -25,6 +25,7 @@ pub(crate) struct LoginWindow<'a> {
     pub(crate) username_input: Input<'a>,
     pub(crate) password_input: Input<'a>,
     pub(crate) login_button: Button<'a, (String, String, Sender<SLSKEvents>), ()>,
+    pub(crate) logout_button: Button<'a, Sender<SLSKEvents>, ()>,
     pub(crate) focus_index: u8,
 }
 
@@ -48,6 +49,20 @@ impl Default for LoginWindow<'_> {
                 }),
                 disabled: false,
             },
+            logout_button: Button {
+                label: String::from("LOGGED OUT"),
+                label_style: STYLE_DISABLED_DEFAULT,
+                block: Block::new()
+                    .borders(Borders::ALL)
+                    .style(STYLE_DISABLED_DEFAULT),
+                event: Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                func: Rc::new(|s, writer| {
+                    if !s.disabled {
+                        let _ = writer.send(SLSKEvents::Quit { restart: true });
+                    }
+                }),
+                disabled: false,
+            },
             focus_index: 0,
         }
     }
@@ -55,7 +70,7 @@ impl Default for LoginWindow<'_> {
 
 impl Widget for LoginWindow<'_> {
     fn render(mut self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        let padding = (area.height - 9) / 2;
+        let padding = (area.height - 12) / 2;
         let columns = Layout::new(
             Direction::Horizontal,
             [
@@ -72,6 +87,7 @@ impl Widget for LoginWindow<'_> {
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Length(3),
+                Constraint::Length(3),
                 Constraint::Length(padding),
             ],
         )
@@ -83,6 +99,7 @@ impl Widget for LoginWindow<'_> {
             0 = (self.username_input) => chunks[1],
             1 = (self.password_input) => chunks[2],
             2 = (self.login_button) => chunks[3],
+            3 = (self.logout_button) => chunks[4],
         );
     }
 }
@@ -103,11 +120,11 @@ impl Window<'_> for LoginWindow<'_> {
     }
 
     fn perform_action(
-            &'_ mut self,
-            focus_index: u8,
-            event: Event,
-            write_queue: &'_ Sender<SLSKEvents>,
-        ) {
+        &'_ mut self,
+        focus_index: u8,
+        event: Event,
+        write_queue: &'_ Sender<SLSKEvents>,
+    ) {
         match focus_index {
             0 => self.username_input.handle_event(&event),
             1 => self.password_input.handle_event(&event),
@@ -122,12 +139,16 @@ impl Window<'_> for LoginWindow<'_> {
                 );
                 None
             }
+            3 => {
+                (self.logout_button.func)(&self.logout_button, write_queue.clone());
+                None
+            }
             _ => unimplemented!("perform_action({focus_index}, {event:?})"),
         };
     }
 
     fn number_of_widgets(&self) -> u8 {
-        3
+        4
     }
 
     fn get_widget(&self, index: u8) -> Option<&dyn SLSKWidget> {
@@ -135,6 +156,7 @@ impl Window<'_> for LoginWindow<'_> {
             0 => Some(&self.username_input),
             1 => Some(&self.password_input),
             2 => Some(&self.login_button),
+            3 => Some(&self.logout_button),
             _ => unimplemented!(
                 "There are only {} widgets, it's impossible to get the widget with index {index}",
                 self.number_of_widgets()
