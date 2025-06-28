@@ -223,28 +223,22 @@ pub(crate) fn log<T: Into<String>>(text: T) {
 }
 
 pub(crate) fn file_is_hidden(path: &Path) -> bool {
-    if path
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .starts_with(".")
-    {
+    if path.file_name().unwrap().to_string_lossy().starts_with(".") {
         return true;
     }
     #[cfg(target_os = "windows")]
     {
         use std::fs::metadata;
 
-        return match metadata(path) {
+        match metadata(path) {
             Ok(f) => {
-                        // thanks to https://users.rust-lang.org/t/portable-way-to-check-if-a-file-is-hidden/106783/2 :)
-                        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-                        let attrs = std::os::windows::fs::MetadataExt::file_attributes(&f);
-                        attrs
-                            & FILE_ATTRIBUTE_HIDDEN
-                            != 0
-                    }
-            Err(_) => false,
+                // thanks to https://users.rust-lang.org/t/portable-way-to-check-if-a-file-is-hidden/106783/2 :)
+                const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+                let attrs = std::os::windows::fs::MetadataExt::file_attributes(&f);
+                return attrs & FILE_ATTRIBUTE_HIDDEN != 0;
+            }
+            Err(_) => (),
         };
     }
+    false
 }
