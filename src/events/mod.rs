@@ -28,5 +28,6 @@ pub enum SLSKEvents {
     NewDownloads { username: String, folder: String, files: Vec<(String, ByteSize)>, from_all: bool },
     NewDownload { username: String, folder: String, filename: String, filesize: ByteSize },
     UpdateDownload { filename: String, status: Arc<RwLock<DownloadStatus>>, percentage: Arc<RwLock<Percentage>> },
-    UpdateDownloads { files: Vec<(String, Arc<RwLock<DownloadStatus>>, Arc<RwLock<Percentage>>)>, from_all: bool }
+    UpdateDownloads { files: Vec<(String, Arc<RwLock<DownloadStatus>>, Arc<RwLock<Percentage>>)>, from_all: bool },
+    BrowseUser { username: String },
 }

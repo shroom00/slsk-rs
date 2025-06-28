@@ -339,6 +339,7 @@ fn run_app<B: Backend>(
                 }
                 SLSKEvents::UpdateDownload { .. } => (),
                 SLSKEvents::UpdateDownloads { .. } => (),
+                SLSKEvents::BrowseUser { .. } => (), // TODO: UI stuff for BrowseUser
             },
             None => (),
         }

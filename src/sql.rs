@@ -350,7 +350,7 @@ impl DiskIndex {
             let full_path = self.alias_components_to_path(&folder_alias, &filename);
 
             let file = File {
-                code: 0,
+                code: 1,
                 filename: format!("{folder_alias}\\{filename}"),
                 file_size: file_size.unwrap_or_default(),
                 extension: filename

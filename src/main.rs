@@ -247,6 +247,8 @@ async fn handle_client(
 
     let my_port: u32 = listener.local_addr().unwrap().port().into();
     let my_username = Arc::new(RwLock::new(None));
+    let server_my_username = Arc::clone(&my_username);
+    let config_username = config.read().await.user.name.clone();
 
     let quit = Arc::new(RwLock::new(false));
     // We have to clone the quit flag so it can be read in different tokio tasks
@@ -353,6 +355,11 @@ async fn handle_client(
             match code {
                 MessageType::Server(1) => {
                     if let Some(response) = Login::from_stream(&mut bytes) {
+                        // if we autologin and succeed, we don't receive a TryLogin event, so the username isn't set
+                        // in this case, we know that the username is the config username
+                        if server_my_username.read().await.is_none() {
+                            *server_my_username.write().await = Some(config_username.clone());
+                        }
                         let _ = write_queue.send(SLSKEvents::LoginResult {
                             success: response.success,
                             reason: response.failure_reason,
@@ -709,6 +716,24 @@ async fn handle_client(
                                     .push_back((status, percentage, Some(from_all)));
                             }
                         }
+                        SLSKEvents::BrowseUser { username } => {
+                            let token = rand::random();
+                            writer_write_queue
+                                .send(SLSKEvents::QueueMessage {
+                                    token,
+                                    message_bytes: SharedFileListRequest::to_bytes(
+                                        SharedFileListRequest {},
+                                    ),
+                                })
+                                .unwrap();
+                            writer_write_queue
+                                .send(SLSKEvents::Connect {
+                                    username,
+                                    token,
+                                    connection_type: ConnectionTypes::PeerToPeer,
+                                })
+                                .unwrap();
+                        }
                     },
                     Err(_) => {
                         *quit_write.write().await = true;
@@ -746,10 +771,6 @@ async fn handle_client(
                             }
                             MessageType::PeerInit(1) => {
                                 if let Some(response) = PeerInit::from_stream(&mut bytes) {
-                                    println!(
-                                        "received peerinit with type {:?} from {}",
-                                        response.connection_type, response.username
-                                    );
                                     let _ = direct_peers_list_writer.push((
                                         peer_stream,
                                         response.username,
@@ -846,7 +867,7 @@ async fn handle_client(
                                     } else {
                                         count += 1;
 
-                                        if count == 10 {
+                                        if count == 100 {
                                             break;
                                         }
                                     }
@@ -1122,7 +1143,7 @@ async fn handle_client(
                                             temp_token_message_map.lock().await.remove(&token)
                                         {
                                             for message in messages {
-                                                log(format!("sent qu to {token} {username}"));
+                                                log(format!("sent to {token} {username}: {message:?}"));
                                                 peer_stream.write_all(&message).await.unwrap();
                                             }
                                         }
@@ -1175,7 +1196,8 @@ async fn handle_client(
                                                                 )
                                                             {
                                                                 // loop {
-                                                                println!("{response:?}");
+                                                                    // println!("{response:?}");
+                                                                    // TODO: UI events for SharedFileListResponse
                                                                 // }
                                                             }
                                                         }
