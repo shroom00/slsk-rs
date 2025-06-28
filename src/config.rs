@@ -6,12 +6,18 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::sql::DiskIndex;
+
 pub(crate) const CONFIG_PATH: &str = "config.toml";
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Config {
+    #[serde(default = "Default::default")]
     pub(crate) server: Server,
+    #[serde(default = "Default::default")]
     pub(crate) user: User,
+    #[serde(default = "DiskIndex::setup")]
+    pub(crate) index: DiskIndex,
 }
 
 impl Config {

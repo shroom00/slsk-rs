@@ -1,7 +1,4 @@
-use std::{
-    fs::OpenOptions,
-    io::Write,
-};
+use std::{fs::OpenOptions, io::Write, path::Path};
 
 use byte_unit::Byte;
 use chrono::Local;
@@ -222,5 +219,32 @@ pub(crate) fn log<T: Into<String>>(text: T) {
             .unwrap();
         f.write_all(format!("{}: {}\n", now_as_string(), &text.into()).as_bytes())
             .unwrap();
+    }
+}
+
+pub(crate) fn file_is_hidden(path: &Path) -> bool {
+    if path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(".")
+    {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::fs::metadata;
+
+        return match metadata(path) {
+            Ok(f) => {
+                        // thanks to https://users.rust-lang.org/t/portable-way-to-check-if-a-file-is-hidden/106783/2 :)
+                        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+                        let attrs = std::os::windows::fs::MetadataExt::file_attributes(&f);
+                        attrs
+                            & FILE_ATTRIBUTE_HIDDEN
+                            != 0
+                    }
+            Err(_) => false,
+        };
     }
 }

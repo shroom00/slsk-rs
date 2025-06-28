@@ -6,6 +6,8 @@ mod events;
 mod gui;
 mod messages;
 mod packing;
+mod parsers;
+mod sql;
 #[allow(dead_code)]
 mod styles;
 mod utils;
@@ -15,17 +17,18 @@ use crate::constants::{DownloadStatus, Percentage};
 use crate::events::SLSKEvents;
 use crate::messages::*;
 use crate::packing::UnpackFromBytes;
+use crate::sql::DiskIndex;
 use crate::utils::keepalive_add_retries;
 
 use constants::{ConnectionTypes, TransferDirections, MAX_RESULTS};
 use crossbeam_deque::Worker;
-use flate2::read::ZlibDecoder;
 use gui::widgets::table;
+use serde::Deserialize;
 use smol::{block_on, Timer};
 use socket2::{SockRef, TcpKeepalive};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{create_dir, create_dir_all};
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{read_to_string, Error, ErrorKind, Write};
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
@@ -49,11 +52,58 @@ const LOGGING_ENABLED: bool = false;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("RUST_BACKTRACE", "1");
 
-    let mut config = Config::default();
+    let mut config: Config = Config {
+        server: Default::default(),
+        user: Default::default(),
+        index: DiskIndex::new(".shares").await?,
+    };
+
     let config_path = Path::new(CONFIG_PATH);
+
+    // write the config to a file if it doesn't exist
     if !config.write_to_file(config_path, false) {
+        // otherwise load it from the file
         config = Config::read_from_file(config_path).expect("Failed to read config from file");
+        let old_config = read_to_string(std::fs::File::open(config_path)?)?;
+
+        // if the shares database doesn't exist, the new config won't have any shares.
+        // we get around this by using the shares from the old index.
+        if config.index.root_folders().is_empty() {
+            if let Ok(old_index) =
+                Config::deserialize(toml::Deserializer::new(&old_config)).map(|c| c.index)
+            {
+                config.index = old_index;
+            }
+        }
+        let new_config = toml::to_string(&config)?;
+        // if the config from the file isn't the same as the one in memory, backup + overwrite the old config
+        if new_config != old_config {
+            std::fs::File::options()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.old", config_path.to_string_lossy()))?
+                .write_all(old_config.as_bytes())?;
+            config.write_to_file(config_path, true);
+        }
     }
+
+    let shares_message = Arc::new(RwLock::new(None));
+
+    // update the file index in the background
+    // this stops the client freezing for ages while the files are being indexed for the first time
+    tokio::task::spawn({
+        let mut index = config.index.clone();
+        let shares_message = Arc::clone(&shares_message);
+        async move {
+            let _ = index.reindex_all().await;
+            *shares_message.write().await = Some(match index.file_list().await {
+                Ok(file_list) => SharedFileListResponse::to_bytes(file_list),
+                Err(_) => Vec::new(),
+            });
+        }
+    });
+
     let config = Arc::new(RwLock::new(config));
     let gui_config = Arc::clone(&config);
     let connection_config = Arc::clone(&config);
@@ -125,11 +175,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         write_queue.clone(),
                         read_queue.resubscribe(),
                         Arc::clone(&config),
+                        Arc::clone(&shares_message),
                     ));
 
                     match handle.await {
                         Ok(slskexit) => match slskexit {
                             SLSKExitCode::LoginFail => (),
+                            SLSKExitCode::IoError(e) => {
+                                if e.kind() == ErrorKind::AddrInUse {
+                                    panic!("The port you tried to use is already in use. You should edit the config file, or free the port.");
+                                } else {
+                                    panic!("{e}");
+                                }
+                            }
                             _ => {
                                 break true;
                             }
@@ -177,11 +235,15 @@ async fn handle_client(
     write_queue: Sender<SLSKEvents>,
     mut read_queue: Receiver<SLSKEvents>,
     config: Arc<RwLock<Config>>,
+    shares_message: Arc<RwLock<Option<Vec<u8>>>>,
 ) -> SLSKExitCode {
     let (mut reader, mut writer) = stream.into_split();
 
-    let port = 0;
-    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
+    let port = config.read().await.user.port;
+    let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(listener) => listener,
+        Err(e) => return SLSKExitCode::IoError(e),
+    };
 
     let my_port: u32 = listener.local_addr().unwrap().port().into();
     let my_username = Arc::new(RwLock::new(None));
@@ -522,6 +584,25 @@ async fn handle_client(
                                     )
                                     .await,
                                 );
+
+                                let shared_folders_and_files = {
+                                    let index = &config.read().await.index;
+                                    SharedFoldersFiles {
+                                        dirs: index.get_folder_count().await.unwrap_or_default(),
+                                        files: index
+                                            .get_total_file_count()
+                                            .await
+                                            .unwrap_or_default(),
+                                    }
+                                };
+                                let _ = block_on(
+                                    SharedFoldersFiles::async_write_to(
+                                        &mut writer,
+                                        shared_folders_and_files,
+                                    )
+                                    .await,
+                                );
+
                                 let _ = block_on(
                                     RoomList::async_write_to(&mut writer, _SendRoomList {}).await,
                                 );
@@ -847,7 +928,7 @@ async fn handle_client(
                     };
                 }
             });
-            for task_num in 0..256u32 {
+            for _task_num in 0..256u32 {
                 tokio::task::spawn({
                     let peer_task_write_queue = peer_write_queue.clone();
                     let peer_token_message_map = Arc::clone(&peer_token_message_map);
@@ -855,6 +936,7 @@ async fn handle_client(
                     let file_info_map = Arc::clone(&file_info_map);
                     let results_map = Arc::clone(&results_map);
                     let tcp_reader = tcp_reader.clone();
+                    let shares_message = Arc::clone(&shares_message);
 
                     async move {
                         loop {
@@ -877,6 +959,7 @@ async fn handle_client(
                                 let peer_task_write_queue = peer_task_write_queue.clone();
                                 let peer_download_filename_map =
                                     Arc::clone(&peer_download_filename_map);
+                                let shares_message = Arc::clone(&shares_message);
                                 async move {
                                     if connection_type == ConnectionTypes::FileTransfer {
                                         let offset = 0;
@@ -1066,16 +1149,24 @@ async fn handle_client(
                                                 Ok((code, mut bytes)) => {
                                                     match code {
                                                         MessageType::Peer(4) => {
-                                                            if let Some(response) =
-                                                                SharedFileListRequest::from_stream(
-                                                                    &mut bytes,
-                                                                )
+                                                            if SharedFileListRequest::from_stream(
+                                                                &mut bytes,
+                                                            )
+                                                            .is_some()
                                                             {
-                                                                // loop {
-                                                                println!("{response:?}");
-                                                                // }
+                                                                if let Some(shares_message) =
+                                                                    shares_message
+                                                                        .read()
+                                                                        .await
+                                                                        .to_owned()
+                                                                {
+                                                                    let _ = block_on(
+                                                                        peer_stream.write_all(
+                                                                            &shares_message,
+                                                                        ),
+                                                                    );
+                                                                }
                                                             }
-                                                            // TODO: Get (and send) file list
                                                         }
                                                         MessageType::Peer(5) => {
                                                             if let Some(response) =
@@ -1089,57 +1180,38 @@ async fn handle_client(
                                                             }
                                                         }
                                                         MessageType::Peer(9) => {
-                                                            let mut buf = Vec::new();
-                                                            // log(format!("started decoding search results on {task_num} from {username}"));
-                                                            match ZlibDecoder::new(&bytes[..])
-                                                                .read_to_end(&mut buf)
+                                                            if let Some(response) =
+                                                                FileSearchResponse::from_stream(
+                                                                    &mut bytes,
+                                                                )
                                                             {
-                                                                Ok(_) => {
-                                                                    bytes = buf;
-                                                                    if let Some(response) =
-                                                                    FileSearchResponse::from_stream(
-                                                                        &mut bytes,
-                                                                    )
+                                                                let mut results_map =
+                                                                    results_map.lock().await;
+                                                                let num_files =
+                                                                    response.files.len() as u32;
+                                                                let count = if results_map
+                                                                    .contains_key(&response.token)
                                                                 {
-                                                                    let mut results_map =
-                                                                        results_map.lock().await;
-                                                                    let num_files =
-                                                                        response.files.len() as u32;
-                                                                    let count = if results_map
-                                                                        .contains_key(
-                                                                            &response.token,
-                                                                        ) {
-                                                                        results_map.get_mut(
-                                                                            &response.token,
-                                                                        )
-                                                                    } else {
-                                                                        results_map.insert(
-                                                                            response.token,
-                                                                            0,
-                                                                        );
-                                                                        results_map.get_mut(
-                                                                            &response.token,
-                                                                        )
-                                                                    }
-                                                                    .unwrap();
-                                                                    if *count < MAX_RESULTS
-                                                                    {
-                                                                        *count += num_files;
-                                                                        peer_task_write_queue
+                                                                    results_map
+                                                                        .get_mut(&response.token)
+                                                                } else {
+                                                                    results_map
+                                                                        .insert(response.token, 0);
+                                                                    results_map
+                                                                        .get_mut(&response.token)
+                                                                }
+                                                                .unwrap();
+                                                                if *count < MAX_RESULTS {
+                                                                    *count += num_files;
+                                                                    peer_task_write_queue
                                                             .send(
                                                                 events::SLSKEvents::SearchResults(
                                                                     response,
                                                                 ),
                                                             )
                                                             .unwrap();
-                                                                    }
-                                                                };
-                                                                }
-                                                                Err(_) => {
-                                                                    // break;
                                                                 }
                                                             };
-                                                            // log(format!("finished decoding search results on {task_num} from {username}"));
                                                             break;
                                                         }
                                                         MessageType::Peer(15) => {
