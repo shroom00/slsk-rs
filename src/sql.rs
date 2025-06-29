@@ -255,37 +255,74 @@ impl DiskIndex {
         let mut priv_directories: Vec<Directory> =
             Vec::with_capacity(self.get_folder_count().await? as usize);
         let mut dir_files = Vec::new();
-        let mut previous_id = -1;
-        for (file_id, folder_id, filename, alias, is_buddy_only, bitrate, duration, vbr, sample_rate, bit_depth, file_size) in
-            sqlx::query_as::<_, (i64, i64, String, String, bool, Option<u32>, Option<f64>, Option<bool>, Option<u32>, Option<u32>, Option<u64>)>(
-                r#"
+        let mut previous_id = None;
+        let mut dir_path = None;
+        let mut last_is_buddy_only = false;
+
+        let results = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, String, bool, Option<u32>, Option<f64>, Option<bool>, Option<u32>, Option<u32>, Option<u64>)>(
+            r#"
             SELECT f.id, folder_id, filename, alias, is_buddy_only, bitrate, duration, vbr, sample_rate, bit_depth, filesize
-            FROM folders fo
-            JOIN files f ON f.folder_id = fo.id
+            FROM folders
+            LEFT JOIN files f ON f.folder_id = folders.id
             LEFT JOIN file_metadata fm ON f.id = fm.file_id
-            ORDER BY f.folder_id
+            ORDER BY LOWER(alias), LOWER(filename)
             "#,
             )
             .fetch_all(&self.pool)
-            .await?
+            .await?.into_iter();
+
+        for (
+            file_id,
+            folder_id,
+            filename,
+            alias,
+            is_buddy_only,
+            bitrate,
+            duration,
+            vbr,
+            sample_rate,
+            bit_depth,
+            file_size,
+        ) in results
         {
+            if file_id.is_none() {
+                directories.push(Directory {
+                    path: alias,
+                    files: Vec::new(),
+                });
+                continue;
+            }
+            let file_id = file_id.unwrap();
+            let folder_id = folder_id.unwrap();
+            let filename = filename.unwrap();
             let (file_size, attributes) = match file_size {
-                Some(file_size) => (file_size, 
-                    FileAttribute::from_parts(bitrate, duration.map(|d| d.round() as u32), vbr, sample_rate, bit_depth)),
-                None => {
-                    match self
-                    .get_file_metadata(file_id)
-                    .await {
-                        Ok(Some((attributes, file_size))) => 
-                        (file_size.unwrap_or_default(), attributes),
-                        _ => (0, Vec::new()),
+                Some(file_size) => (
+                    file_size,
+                    FileAttribute::from_parts(
+                        bitrate,
+                        duration.map(|d| d.round() as u32),
+                        vbr,
+                        sample_rate,
+                        bit_depth,
+                    ),
+                ),
+                None => match self.get_file_metadata(file_id).await {
+                    Ok(Some((attributes, file_size))) => {
+                        (file_size.unwrap_or_default(), attributes)
                     }
-            }};
-            if previous_id != folder_id {
-                previous_id = folder_id;
+                    _ => (0, Vec::new()),
+                },
+            };
+            if dir_path.is_none() {
+                dir_path = Some(alias.clone());
+            }
+            if previous_id.is_none() {
+                previous_id = Some(folder_id);
+            } else if previous_id.unwrap() != folder_id {
+                previous_id = Some(folder_id);
                 if !dir_files.is_empty().clone() {
                     let dir = Directory {
-                        path: alias.clone(),
+                        path: dir_path.unwrap(),
                         files: dir_files,
                     };
                     if is_buddy_only {
@@ -294,6 +331,7 @@ impl DiskIndex {
                         directories.push(dir);
                     };
                     dir_files = Vec::new();
+                    dir_path = Some(alias);
                 }
             };
             let extension = filename
@@ -307,6 +345,18 @@ impl DiskIndex {
                 extension,
                 attributes,
             });
+            last_is_buddy_only = is_buddy_only;
+        }
+
+        let last_dir = Directory {
+            path: dir_path.unwrap(),
+            files: dir_files,
+        };
+
+        if last_is_buddy_only {
+            priv_directories.push(last_dir);
+        } else {
+            directories.push(last_dir);
         }
         let file_list = SharedFileListResponse {
             directories,
@@ -322,31 +372,49 @@ impl DiskIndex {
         &self,
         query: &str,
     ) -> Result<(Vec<(File, PathBuf)>, Vec<(File, PathBuf)>), Box<dyn std::error::Error>> {
-        let search_pattern = format!("%{}%", query.to_lowercase());
+        let terms: Vec<String> = Self::extract_terms(query);
+        if terms.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
 
-        // Search both by filename and by terms
-        let rows = sqlx::query_as::<_, (i64, String, String, bool)>(
+        let placeholders: Vec<String> = terms.iter().map(|_| "?".to_string()).collect();
+        let in_clause = format!("({})", placeholders.join(", "));
+
+        let sql = format!(
             r#"
             SELECT DISTINCT f.id, f.filename, fo.alias, fo.is_buddy_only
             FROM files f
             JOIN folders fo ON f.folder_id = fo.id
-            LEFT JOIN file_terms ft ON f.id = ft.file_id
-            LEFT JOIN terms t ON ft.term_id = t.id
-            WHERE LOWER(f.filename) LIKE ? OR t.term LIKE ?
-            ORDER BY f.filename
+            WHERE f.id IN (
+                SELECT ft.file_id
+                FROM file_terms ft
+                JOIN terms t ON ft.term_id = t.id
+                WHERE t.term IN {}
+                GROUP BY ft.file_id
+                HAVING COUNT(DISTINCT t.term) = ?
+            )
+            ORDER BY LOWER(fo.alias), LOWER(f.filename)
             "#,
-        )
-        .bind(&search_pattern)
-        .bind(&search_pattern)
-        .fetch_all(&self.pool)
-        .await?;
+            in_clause
+        );
+
+        let mut query = sqlx::query_as::<_, (i64, String, String, bool)>(&sql);
+
+        for term in &terms {
+            query = query.bind(term);
+        }
+        query = query.bind(terms.len() as i64);
+        let rows = query.fetch_all(&self.pool).await?;
 
         let mut files = Vec::new();
         let mut private_files = Vec::new();
 
         for (file_id, filename, folder_alias, is_buddy_only) in rows {
             // Get metadata if it exists
-            let (attributes, file_size) = self.get_file_metadata(file_id).await?.unwrap_or((Vec::new(), None));
+            let (attributes, file_size) = self
+                .get_file_metadata(file_id)
+                .await?
+                .unwrap_or((Vec::new(), None));
             let full_path = self.alias_components_to_path(&folder_alias, &filename);
 
             let file = File {
@@ -360,7 +428,6 @@ impl DiskIndex {
                 attributes,
             };
 
-            
             if is_buddy_only {
                 private_files.push((file, full_path));
             } else {
@@ -377,7 +444,10 @@ impl DiskIndex {
     }
 
     /// Get metadata for a specific file
-    async fn get_file_metadata(&self, file_id: i64) -> Result<Option<(Vec<FileAttribute>, Option<u64>)>, sqlx::Error> {
+    async fn get_file_metadata(
+        &self,
+        file_id: i64,
+    ) -> Result<Option<(Vec<FileAttribute>, Option<u64>)>, sqlx::Error> {
         let row = sqlx::query_as::<_, (Option<u32>, Option<f64>, Option<bool>, Option<u32>, Option<u32>, Option<u64>)>(
             "SELECT bitrate, duration, vbr, sample_rate, bit_depth, filesize FROM file_metadata WHERE file_id = ?"
         )
@@ -386,7 +456,16 @@ impl DiskIndex {
         .await?;
 
         if let Some((bitrate, duration, vbr, sample_rate, bit_depth, filesize)) = row {
-            return Ok(Some((FileAttribute::from_parts(bitrate, duration.map(|d| d.round() as u32), vbr, sample_rate, bit_depth), filesize)));
+            return Ok(Some((
+                FileAttribute::from_parts(
+                    bitrate,
+                    duration.map(|d| d.round() as u32),
+                    vbr,
+                    sample_rate,
+                    bit_depth,
+                ),
+                filesize,
+            )));
         } else {
             if let Ok((filename, folder_alias)) = sqlx::query_as::<_, (String, String)>(
                 "SELECT files.filename, folder.alias
@@ -407,7 +486,17 @@ impl DiskIndex {
                     let bit_depth = parsed.bit_depth().map(|bd| bd as u32);
                     let filesize = path.metadata().map(|m| m.len()).ok();
 
-                    let _ = self.store_file_metadata(file_id, bitrate, duration, vbr, sample_rate, bit_depth, filesize).await;
+                    let _ = self
+                        .store_file_metadata(
+                            file_id,
+                            bitrate,
+                            duration,
+                            vbr,
+                            sample_rate,
+                            bit_depth,
+                            filesize,
+                        )
+                        .await;
 
                     let mut attrs = vec![
                         FileAttribute::Bitrate(bitrate),
@@ -434,7 +523,7 @@ impl DiskIndex {
         vbr: bool,
         sample_rate: u32,
         bit_depth: Option<u32>,
-        filesize: Option<u64>
+        filesize: Option<u64>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
@@ -469,7 +558,7 @@ impl DiskIndex {
     pub(crate) async fn get_folder_count(&self) -> Result<u32, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT COUNT(DISTINCT folders.id)
+            SELECT COUNT(DISTINCT id)
             FROM folders
             "#,
         )
@@ -530,6 +619,11 @@ impl DiskIndex {
 
         let mut files_to_insert = Vec::new();
 
+        let indexed_at = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
         for entry in walker {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -539,75 +633,66 @@ impl DiskIndex {
                 }
             };
 
+            let file_path = entry.path();
+            let parent_dir = file_path.parent().unwrap_or(folder_path);
+
             if entry.file_type().is_file() {
-                let file_path = entry.path();
-                let parent_dir = file_path.parent().unwrap_or(folder_path);
+                // Determine which folder this file belongs to
+                let relative_parent = parent_dir
+                    .strip_prefix(folder_path)
+                    .unwrap_or(std::path::Path::new(""));
+                let file_folder_path = if relative_parent.as_os_str().is_empty() {
+                    folder_path.to_path_buf()
+                } else {
+                    folder_path.join(relative_parent)
+                };
 
-                // Only index files that are direct children or in subdirectories
-                if let Some(filename) = file_path.file_name() {
-                    let filename_str = filename.to_string_lossy();
-
-                    // Get file metadata (modification time)
-                    let modified_time = match entry.metadata() {
-                        Ok(m) => m
-                            .modified()
-                            .map(|t| {
-                                t.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64
-                            })
-                            .unwrap_or(0),
-                        Err(_) => 0,
-                    };
-
-                    // Determine which folder this file belongs to
-                    let relative_parent = parent_dir
-                        .strip_prefix(folder_path)
-                        .unwrap_or(std::path::Path::new(""));
-                    let file_folder_path = if relative_parent.as_os_str().is_empty() {
-                        folder_path.to_path_buf()
-                    } else {
-                        folder_path.join(relative_parent)
-                    };
-
-                    files_to_insert.push((
-                        file_folder_path,
-                        filename_str.to_string(),
-                        modified_time,
-                    ));
-                }
+                files_to_insert.push((
+                    file_folder_path,
+                    entry.file_name().to_string_lossy().to_string(),
+                    true,
+                ));
+                // }
+            } else {
+                files_to_insert.push((entry.path().to_path_buf(), String::new(), false));
             }
         }
 
         // Group files by their parent folder and ensure all folders exist
         let mut folder_cache: HashMap<PathBuf, i64> = HashMap::new();
 
-        for (file_folder_path, filename, modified_time) in files_to_insert {
+        for (file_folder_path, filename, is_file) in files_to_insert {
+            // Create subfolder entry if it doesn't exist
+            let relative_path = file_folder_path
+                .strip_prefix(folder_path)
+                .unwrap_or(std::path::Path::new(""));
+            let subfolder_alias = if relative_path.as_os_str().is_empty() {
+                alias.to_string()
+            } else {
+                format!("{}\\{}", alias, relative_path.to_string_lossy())
+            };
+
             let current_folder_id = if let Some(&cached_id) = folder_cache.get(&file_folder_path) {
                 cached_id
             } else {
-                // Create subfolder entry if it doesn't exist
-                let relative_path = file_folder_path
-                    .strip_prefix(folder_path)
-                    .unwrap_or(std::path::Path::new(""));
-                let subfolder_alias = if relative_path.as_os_str().is_empty() {
-                    alias.to_string()
-                } else {
-                    format!("{}\\{}", alias, relative_path.to_string_lossy())
-                };
-
                 let subfolder_id = sqlx::query_scalar::<_, i64>(
                     r#"
-                    INSERT INTO folders (alias, is_buddy_only)
-                    VALUES (?, ?)
-                    ON CONFLICT(alias) DO UPDATE SET alias = alias
+                    INSERT INTO folders (alias, is_buddy_only, indexed_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(alias) DO UPDATE SET is_buddy_only = is_buddy_only, indexed_at = ?
                     RETURNING id
                     "#,
                 )
                 .bind(&subfolder_alias)
                 .bind(is_buddy_only)
+                .bind(indexed_at)
+                .bind(indexed_at)
                 .fetch_one(&mut *tx)
                 .await?;
+
+                if !is_file {
+                    continue;
+                }
 
                 folder_cache.insert(file_folder_path.clone(), subfolder_id);
                 subfolder_id
@@ -616,36 +701,54 @@ impl DiskIndex {
             // Insert the file
             let file_id = match sqlx::query_scalar::<_, i64>(
                 r#"
-                INSERT OR IGNORE INTO files (folder_id, filename, modified_time)
+                INSERT OR IGNORE INTO files (folder_id, filename, indexed_at)
                 VALUES (?, ?, ?)
                 RETURNING id
                 "#,
             )
             .bind(current_folder_id)
             .bind(&filename)
-            .bind(modified_time)
+            .bind(indexed_at)
             .fetch_one(&mut *tx)
             .await
             {
                 Ok(file_id) => file_id,
                 Err(_) => {
+                    sqlx::query(
+                        r#"
+                        UPDATE files
+                        SET indexed_at = ?
+                        WHERE folder_id = ?
+                        "#,
+                    )
+                    .bind(indexed_at)
+                    .bind(current_folder_id)
+                    .execute(&mut *tx)
+                    .await?;
                     continue;
                 }
             };
 
-            // Extract and index terms from filename
-            self.index_file_terms(&mut tx, file_id, &filename).await?;
+            // Extract and index terms from full path
+            // doing this for folders is pointless because we only want to return files
+            if is_file {
+                self.index_file_terms(&mut tx, file_id, &format!("{subfolder_alias}\\{filename}"))
+                    .await?;
+            }
         }
 
+        tx.commit().await?;
+
+        let mut tx = self.pool.begin().await?;
+
+        // delete folders that no longer exist, CASCADE will remove files and terms
         sqlx::query(
             r#"
             DELETE FROM folders
-            WHERE NOT EXISTS (
-                SELECT 1 FROM files 
-                WHERE files.folder_id = folders.id
-            )
+            WHERE indexed_at < ?
             "#,
         )
+        .bind(indexed_at)
         .execute(&mut *tx)
         .await?;
 
@@ -660,6 +763,18 @@ impl DiskIndex {
         Ok(())
     }
 
+    fn extract_terms(string: &str) -> Vec<String> {
+        let mut terms = string
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|term| !term.is_empty() && term.len() > 1)
+            .map(|term| term.to_string())
+            .collect::<Vec<_>>();
+        terms.sort();
+        terms.dedup();
+        terms
+    }
+
     /// Extract terms from filename and store them for fast searching
     async fn index_file_terms(
         &self,
@@ -668,12 +783,7 @@ impl DiskIndex {
         filename: &str,
     ) -> Result<(), sqlx::Error> {
         // Simple term extraction - split on common delimiters and normalize
-        let terms: Vec<String> = filename
-            .to_lowercase()
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|term| !term.is_empty() && term.len() > 1)
-            .map(|term| term.to_string())
-            .collect();
+        let terms = Self::extract_terms(filename);
 
         for term in terms {
             // Insert term if it doesn't exist
