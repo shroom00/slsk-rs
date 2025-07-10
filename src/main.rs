@@ -26,7 +26,7 @@ use gui::widgets::table;
 use serde::Deserialize;
 use smol::{block_on, Timer};
 use socket2::{SockRef, TcpKeepalive};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{create_dir, create_dir_all};
 use std::io::{read_to_string, Error, ErrorKind, Write};
 use std::net::Ipv4Addr;
@@ -161,14 +161,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(stream) => {
                     let sock_ref = SockRef::from(&stream);
                     // These specific settings are based on nicotine+'s settings
+                    // TODO: Set the number of TCP pings allowed before the connection is assumed to be dead (should be 10)
+                    // on platforms where it's not supported by socket2 (e.g. Windows)
+                    // Not 100% sure this is actually possible as it's an OS limitation, but I imagine it could be implemented manually.
                     let mut ka = TcpKeepalive::new()
                         .with_time(Duration::from_secs(10))
                         .with_interval(Duration::from_secs(2));
                     ka = keepalive_add_retries(ka);
                     sock_ref.set_tcp_keepalive(&ka)?;
-                    // TODO: Set the number of TCP pings allowed before the connection is assumed to be dead (should be 10)
-                    // on platforms where it's not supported by socket2 (e.g. Windows)
-                    // Not 100% sure this is actually possible as it's an OS limitation, but I imagine it could be implemented manually.
 
                     let handle = tokio::spawn(handle_client(
                         stream,
@@ -262,9 +262,13 @@ async fn handle_client(
     let indirect_peers_list_writer = Worker::<_ReceiveConnectToPeer>::new_fifo();
     let direct_peers_list_writer = Worker::<(TcpStream, String, u32, ConnectionTypes)>::new_fifo();
     let prompted_peers_list_writer = Worker::<(String, u32, ConnectionTypes)>::new_fifo();
+    let closed_peer_info = Arc::new(Mutex::new(HashMap::<u32, (String, ConnectionTypes)>::new()));
+    let closed_peer_info_reader = Arc::clone(&closed_peer_info);
+
     let indirect_peers_list_reader = indirect_peers_list_writer.stealer();
     let direct_peers_list_reader = direct_peers_list_writer.stealer();
     let prompted_peers_list_reader = prompted_peers_list_writer.stealer();
+
     let peer_write_queue = write_queue.clone();
     let writer_write_queue = write_queue.clone();
 
@@ -422,13 +426,14 @@ async fn handle_client(
                     // TODO: Handle peer connections appropriately depending on if we have an open port
                     if let Some(connect_request) = ConnectToPeer::from_stream(&mut bytes) {
                         match connect_request.connection_type {
-                            constants::ConnectionTypes::PeerToPeer => {
+                            ConnectionTypes::PeerToPeer => {
                                 let _ = indirect_peers_list_writer.push(connect_request);
                             }
-                            constants::ConnectionTypes::FileTransfer => {
+                            ConnectionTypes::FileTransfer => {
                                 let _ = indirect_peers_list_writer.push(connect_request);
                             }
-                            constants::ConnectionTypes::DistributedNetwork => (),
+                            // TODO: distributed network ConnectToPeer
+                            ConnectionTypes::DistributedNetwork => (),
                         }
                     }
                 }
@@ -746,6 +751,7 @@ async fn handle_client(
     });
 
     let listener_task = tokio::spawn(async move {
+        let direct_peers_list_writer = Arc::new(Mutex::new(direct_peers_list_writer));
         loop {
             sleep(Duration::from_nanos(1)).await;
             match listener.accept().await {
@@ -765,13 +771,40 @@ async fn handle_client(
                         Ok((code, mut bytes)) => match code {
                             MessageType::PeerInit(0) => {
                                 if let Some(response) = PierceFireWall::from_stream(&mut bytes) {
-                                    println!("we received a piercefirewall: {response:?}");
-                                    todo!()
+                                    let closed_peer_info_reader =
+                                        Arc::clone(&closed_peer_info_reader);
+                                    let direct_peers_list_writer =
+                                        Arc::clone(&direct_peers_list_writer);
+                                    // this gets its own task so it doesn't block other connections
+                                    tokio::task::spawn(async move {
+                                        let mut count = 0;
+                                        if let Some((username, connection_type)) = loop {
+                                            if let Some(info) = closed_peer_info_reader
+                                                .lock()
+                                                .await
+                                                .remove(&response.token)
+                                            {
+                                                break Some(info);
+                                            };
+                                            sleep(Duration::from_millis(100)).await;
+                                            count += 1;
+                                            if count == 50 {
+                                                break None;
+                                            }
+                                        } {
+                                            let _ = direct_peers_list_writer.lock().await.push((
+                                                peer_stream,
+                                                username,
+                                                response.token,
+                                                connection_type,
+                                            ));
+                                        }
+                                    });
                                 }
                             }
                             MessageType::PeerInit(1) => {
                                 if let Some(response) = PeerInit::from_stream(&mut bytes) {
-                                    let _ = direct_peers_list_writer.push((
+                                    let _ = direct_peers_list_writer.lock().await.push((
                                         peer_stream,
                                         response.username,
                                         response.token,
@@ -806,147 +839,185 @@ async fn handle_client(
             )>::new_fifo();
             let tcp_reader = tcp_queue.stealer();
             let tcp_queue = Arc::new(Mutex::new(tcp_queue));
+            let currently_connected = Arc::new(RwLock::new(HashSet::<String>::new()));
 
-            let _connection_task = tokio::spawn(async move {
-                loop {
-                    let _prompted = loop {
-                        match prompted_peers_list_reader.steal() {
-                            crossbeam_deque::Steal::Empty => break,
-                            crossbeam_deque::Steal::Success((username, token, connection_type)) => {
-                                let mut count: u16 = 0;
-                                loop {
-                                    sleep(Duration::from_millis(10)).await;
+            let _connection_task = tokio::spawn({
+                let currently_connected = Arc::clone(&currently_connected);
+                async move {
+                    loop {
+                        let _prompted = loop {
+                            match prompted_peers_list_reader.steal() {
+                                crossbeam_deque::Steal::Empty => break,
+                                crossbeam_deque::Steal::Success((
+                                    username,
+                                    token,
+                                    connection_type,
+                                )) => {
+                                    let mut count = 0;
+                                    loop {
+                                        sleep(Duration::from_millis(10)).await;
 
-                                    if let Some((ip, port)) =
-                                        peer_user_info_map.lock().await.get(&username).cloned()
-                                    {
-                                        let my_username = my_username.clone();
-                                        let tcp_queue = tcp_queue.clone();
-                                        tokio::spawn(async move {
-                                            if let Ok(Ok(mut peer_stream)) = tokio::time::timeout(
-                                                Duration::from_secs(CONNECTION_TIME),
-                                                tokio::net::TcpStream::connect(format!(
-                                                    "{}:{port}",
-                                                    ip.to_string()
-                                                )),
-                                            )
-                                            .await
-                                            {
-                                                block_on(
-                                                    PeerInit::async_write_to(
-                                                        &mut peer_stream,
-                                                        PeerInit {
-                                                            username: my_username
-                                                                .read()
-                                                                .await
-                                                                .clone()
-                                                                .unwrap(),
-                                                            connection_type,
-                                                            token: 0,
-                                                        },
+                                        if let Some((ip, port)) =
+                                            peer_user_info_map.lock().await.get(&username).cloned()
+                                        {
+                                            let my_username = my_username.clone();
+                                            let tcp_queue = tcp_queue.clone();
+                                            let currently_connected =
+                                                Arc::clone(&currently_connected);
+                                            tokio::spawn(async move {
+                                                if let Ok(Ok(mut peer_stream)) =
+                                                    tokio::time::timeout(
+                                                        Duration::from_secs(CONNECTION_TIME),
+                                                        tokio::net::TcpStream::connect(format!(
+                                                            "{}:{port}",
+                                                            ip.to_string()
+                                                        )),
                                                     )
-                                                    .await,
-                                                )
-                                                .unwrap();
-                                                match connection_type {
-                                                    ConnectionTypes::PeerToPeer => (),
-                                                    ConnectionTypes::FileTransfer => (),
-                                                    ConnectionTypes::DistributedNetwork => {
-                                                        todo!("implement distributed messages")
+                                                    .await
+                                                {
+                                                    block_on(
+                                                        PeerInit::async_write_to(
+                                                            &mut peer_stream,
+                                                            PeerInit {
+                                                                username: my_username
+                                                                    .read()
+                                                                    .await
+                                                                    .clone()
+                                                                    .unwrap(),
+                                                                connection_type,
+                                                                token: 0,
+                                                            },
+                                                        )
+                                                        .await,
+                                                    )
+                                                    .unwrap();
+                                                    match connection_type {
+                                                        ConnectionTypes::PeerToPeer => (),
+                                                        ConnectionTypes::FileTransfer => (),
+                                                        ConnectionTypes::DistributedNetwork => {
+                                                            todo!("implement distributed messages")
+                                                        }
+                                                    }
+                                                    if !currently_connected
+                                                        .read()
+                                                        .await
+                                                        .contains(&username)
+                                                    {
+                                                        tcp_queue.lock().await.push((
+                                                            username,
+                                                            token,
+                                                            peer_stream,
+                                                            connection_type,
+                                                        ));
                                                     }
                                                 }
-                                                tcp_queue.lock().await.push((
-                                                    username,
-                                                    token,
-                                                    peer_stream,
-                                                    connection_type,
-                                                ));
-                                            }
-                                        });
-                                        break;
-                                    } else {
-                                        count += 1;
-
-                                        if count == 100 {
+                                            });
                                             break;
+                                        } else {
+                                            count += 1;
+
+                                            if count == 100 {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            crossbeam_deque::Steal::Retry => {
-                                continue;
-                            }
-                        }
-                    };
-
-                    let _indirect = {
-                        sleep(Duration::from_millis(10)).await;
-                        loop {
-                            match indirect_peers_list_reader.steal() {
-                                crossbeam_deque::Steal::Empty => break,
-                                crossbeam_deque::Steal::Success(indirect_connection) => {
-                                    let tcp_queue = tcp_queue.clone();
-                                    tokio::spawn(async move {
-                                        let peer_addr = format!(
-                                            "{}:{}",
-                                            indirect_connection.ip, indirect_connection.port
-                                        );
-                                        if let Ok(Ok(mut peer_stream)) = {
-                                            tokio::time::timeout(
-                                                Duration::from_secs(CONNECTION_TIME),
-                                                tokio::net::TcpStream::connect(&peer_addr),
-                                            )
-                                        }
-                                        .await
-                                        {
-                                            match block_on(
-                                                PierceFireWall::async_write_to(
-                                                    &mut peer_stream,
-                                                    PierceFireWall {
-                                                        token: indirect_connection.firewall_token,
-                                                    },
-                                                )
-                                                .await,
-                                            ) {
-                                                Ok(_) => tcp_queue.lock().await.push((
-                                                    indirect_connection.username,
-                                                    indirect_connection.firewall_token,
-                                                    peer_stream,
-                                                    indirect_connection.connection_type,
-                                                )),
-                                                Err(_) => {
-                                                    let _ = peer_stream.shutdown().await;
-                                                }
-                                            }
-                                        };
-                                    });
+                                crossbeam_deque::Steal::Retry => {
+                                    continue;
                                 }
-                                crossbeam_deque::Steal::Retry => continue,
                             }
-                        }
-                    };
+                        };
 
-                    let _direct = loop {
-                        sleep(Duration::from_millis(10)).await;
-                        match direct_peers_list_reader.steal() {
-                            crossbeam_deque::Steal::Empty => break,
-                            crossbeam_deque::Steal::Success((
-                                stream,
-                                username,
-                                token,
-                                connection_type,
-                            )) => {
-                                tcp_queue.lock().await.push((
+                        let _indirect = {
+                            sleep(Duration::from_millis(10)).await;
+                            loop {
+                                match indirect_peers_list_reader.steal() {
+                                    crossbeam_deque::Steal::Empty => break,
+                                    crossbeam_deque::Steal::Success(indirect_connection) => {
+                                        if currently_connected
+                                            .read()
+                                            .await
+                                            .contains(&indirect_connection.username)
+                                        {
+                                            break;
+                                        }
+                                        let tcp_queue = tcp_queue.clone();
+                                        let closed_peer_info = Arc::clone(&closed_peer_info);
+                                        tokio::spawn(async move {
+                                            let peer_addr = format!(
+                                                "{}:{}",
+                                                indirect_connection.ip, indirect_connection.port
+                                            );
+                                            if let Ok(Ok(mut peer_stream)) = {
+                                                tokio::time::timeout(
+                                                    Duration::from_secs(CONNECTION_TIME),
+                                                    tokio::net::TcpStream::connect(&peer_addr),
+                                                )
+                                            }
+                                            .await
+                                            {
+                                                match block_on(
+                                                    PierceFireWall::async_write_to(
+                                                        &mut peer_stream,
+                                                        PierceFireWall {
+                                                            token: indirect_connection
+                                                                .firewall_token,
+                                                        },
+                                                    )
+                                                    .await,
+                                                ) {
+                                                    Ok(_) => tcp_queue.lock().await.push((
+                                                        indirect_connection.username,
+                                                        indirect_connection.firewall_token,
+                                                        peer_stream,
+                                                        indirect_connection.connection_type,
+                                                    )),
+                                                    Err(_) => {
+                                                        let _ = peer_stream.shutdown().await;
+                                                    }
+                                                }
+                                            } else {
+                                                closed_peer_info.lock().await.insert(
+                                                    indirect_connection.firewall_token,
+                                                    (
+                                                        indirect_connection.username,
+                                                        indirect_connection.connection_type,
+                                                    ),
+                                                );
+                                            };
+                                        });
+                                    }
+                                    crossbeam_deque::Steal::Retry => continue,
+                                }
+                            }
+                        };
+
+                        let _direct = loop {
+                            sleep(Duration::from_millis(10)).await;
+                            match direct_peers_list_reader.steal() {
+                                crossbeam_deque::Steal::Empty => break,
+                                crossbeam_deque::Steal::Success((
+                                    stream,
                                     username,
                                     token,
-                                    stream,
                                     connection_type,
-                                ));
-                                break;
-                            }
-                            crossbeam_deque::Steal::Retry => continue,
+                                )) => {
+                                    if (connection_type != ConnectionTypes::PeerToPeer)
+                                        | !currently_connected.read().await.contains(&username)
+                                    {
+                                        tcp_queue.lock().await.push((
+                                            username,
+                                            token,
+                                            stream,
+                                            connection_type,
+                                        ));
+                                    }
+                                    break;
+                                }
+                                crossbeam_deque::Steal::Retry => continue,
+                            };
                         };
-                    };
+                    }
                 }
             });
             for _task_num in 0..256u32 {
@@ -958,6 +1029,7 @@ async fn handle_client(
                     let results_map = Arc::clone(&results_map);
                     let tcp_reader = tcp_reader.clone();
                     let shares_message = Arc::clone(&shares_message);
+                    let currently_connected = Arc::clone(&currently_connected);
 
                     async move {
                         loop {
@@ -965,6 +1037,7 @@ async fn handle_client(
                             let temp_token_message_map = Arc::clone(&peer_token_message_map);
                             let file_info_map = Arc::clone(&file_info_map);
                             let results_map = Arc::clone(&results_map);
+                            let currently_connected = Arc::clone(&currently_connected);
 
                             let (username, token, mut peer_stream, connection_type) = loop {
                                 match tcp_reader.steal() {
@@ -982,193 +1055,218 @@ async fn handle_client(
                                     Arc::clone(&peer_download_filename_map);
                                 let shares_message = Arc::clone(&shares_message);
                                 async move {
-                                    if connection_type == ConnectionTypes::FileTransfer {
-                                        let offset = 0;
-                                        let mut percentage = 0u8;
-                                        let mut downloaded = offset;
-                                        let file_init_token =
-                                            peer_stream.read_u32_le().await.unwrap();
-                                        let (filename, filesize) = {
-                                            file_info_map
-                                                .lock()
-                                                .await
-                                                .get_mut(&file_init_token)
-                                                .unwrap()
-                                                .pop_front()
-                                                .unwrap()
-                                        };
-                                        let (download_status, download_percentage, download_type) = {
-                                            loop {
-                                                {
-                                                    let mut locked_peer_download_filename_map =
-                                                        peer_download_filename_map.lock().await;
-                                                    if let Some(all_download_info) =
-                                                        locked_peer_download_filename_map
-                                                            .get_mut(&filename)
-                                                    {
-                                                        if let Some(download_info) =
-                                                            all_download_info.pop_front()
-                                                        {
-                                                            if all_download_info.is_empty() {
-                                                                locked_peer_download_filename_map
-                                                                    .remove(&filename);
-                                                            }
-                                                            break download_info;
-                                                        }
-                                                    };
-                                                    sleep(Duration::from_millis(500)).await;
-                                                }
-                                            }
-                                        };
-                                        {
-                                            *download_status.write().await =
-                                                DownloadStatus::Starting;
-                                        }
-                                        let mut file_handle = std::fs::File::create({
-                                            let (prefix, base_name) =
-                                                filename.rsplit_once("\\").unwrap();
-                                            let filepath = match download_type {
-                                                Some(is_all) => {
-                                                    let folder =
-                                                        prefix.rsplit_once("\\").unwrap().1;
-
-                                                    {
-                                                        if is_all {
-                                                            let folder_path =
-                                                                Path::new(&username).join(folder);
-                                                            if !std::fs::exists(&username).unwrap()
-                                                            {
-                                                                create_dir_all(&folder_path)
-                                                                    .unwrap();
-                                                            } else if !std::fs::exists(&folder_path)
-                                                                .unwrap()
-                                                            {
-                                                                create_dir(&folder_path).unwrap();
-                                                            };
-                                                            folder_path
-                                                        } else {
-                                                            let folder_path = Path::new(&folder);
-                                                            if !std::fs::exists(&folder_path)
-                                                                .unwrap()
-                                                            {
-                                                                create_dir(&folder_path).unwrap();
-                                                            };
-                                                            folder_path.to_path_buf()
-                                                        }
-                                                    }
-                                                    .join(base_name)
-                                                }
-                                                None => base_name.into(),
+                                    match connection_type {
+                                        ConnectionTypes::FileTransfer => {
+                                            let offset = 0;
+                                            let mut percentage = 0u8;
+                                            let mut downloaded = offset;
+                                            let file_init_token =
+                                                peer_stream.read_u32_le().await.unwrap();
+                                            let (filename, filesize) = {
+                                                file_info_map
+                                                    .lock()
+                                                    .await
+                                                    .get_mut(&file_init_token)
+                                                    .unwrap()
+                                                    .pop_front()
+                                                    .unwrap()
                                             };
-                                            if filepath.exists() {
-                                                let mut count = 1;
-                                                let base_name = filepath.with_extension("");
-                                                let base_name = base_name.to_string_lossy();
-                                                let extension = filepath
-                                                    .extension()
-                                                    .map(|s| format!(".{}", s.to_string_lossy()))
-                                                    .unwrap_or_default();
-
+                                            let (
+                                                download_status,
+                                                download_percentage,
+                                                download_type,
+                                            ) = {
                                                 loop {
-                                                    let new_filepath = Path::new(&format!(
-                                                        "{base_name} ({count}){extension}",
-                                                    ))
-                                                    .to_path_buf();
-                                                    if new_filepath.exists() {
-                                                        count += 1;
-                                                    } else {
-                                                        break new_filepath;
+                                                    {
+                                                        let mut locked_peer_download_filename_map =
+                                                            peer_download_filename_map.lock().await;
+                                                        if let Some(all_download_info) =
+                                                            locked_peer_download_filename_map
+                                                                .get_mut(&filename)
+                                                        {
+                                                            if let Some(download_info) =
+                                                                all_download_info.pop_front()
+                                                            {
+                                                                if all_download_info.is_empty() {
+                                                                    locked_peer_download_filename_map
+                                                                    .remove(&filename);
+                                                                }
+                                                                break download_info;
+                                                            }
+                                                        };
+                                                        sleep(Duration::from_millis(500)).await;
                                                     }
                                                 }
-                                            } else {
-                                                filepath
-                                            }
-                                        })
-                                        .unwrap();
-                                        peer_stream.write_u64_le(offset).await.unwrap();
-
-                                        loop {
-                                            sleep(Duration::from_nanos(1)).await;
-                                            let mut buf = vec![
-                                                0;
-                                                std::cmp::min(
-                                                    (filesize - downloaded) as usize,
-                                                    CHUNK_SIZE,
-                                                )
-                                            ];
+                                            };
                                             {
                                                 *download_status.write().await =
-                                                    DownloadStatus::Downloading;
+                                                    DownloadStatus::Starting;
                                             }
-                                            match peer_stream.read_exact(&mut buf).await {
-                                                Ok(n) => {
-                                                    downloaded += n as u64;
-                                                    file_handle.write_all(&buf).unwrap();
-                                                    if downloaded == filesize {
-                                                        log(format!(
+                                            let mut file_handle = std::fs::File::create({
+                                                let (prefix, base_name) =
+                                                    filename.rsplit_once("\\").unwrap();
+                                                let filepath = match download_type {
+                                                    Some(is_all) => {
+                                                        let folder =
+                                                            prefix.rsplit_once("\\").unwrap().1;
+
+                                                        {
+                                                            if is_all {
+                                                                let folder_path =
+                                                                    Path::new(&username)
+                                                                        .join(folder);
+                                                                if !std::fs::exists(&username)
+                                                                    .unwrap()
+                                                                {
+                                                                    create_dir_all(&folder_path)
+                                                                        .unwrap();
+                                                                } else if !std::fs::exists(
+                                                                    &folder_path,
+                                                                )
+                                                                .unwrap()
+                                                                {
+                                                                    create_dir(&folder_path)
+                                                                        .unwrap();
+                                                                };
+                                                                folder_path
+                                                            } else {
+                                                                let folder_path =
+                                                                    Path::new(&folder);
+                                                                if !std::fs::exists(&folder_path)
+                                                                    .unwrap()
+                                                                {
+                                                                    create_dir(&folder_path)
+                                                                        .unwrap();
+                                                                };
+                                                                folder_path.to_path_buf()
+                                                            }
+                                                        }
+                                                        .join(base_name)
+                                                    }
+                                                    None => base_name.into(),
+                                                };
+                                                if filepath.exists() {
+                                                    let mut count = 1;
+                                                    let base_name = filepath.with_extension("");
+                                                    let base_name = base_name.to_string_lossy();
+                                                    let extension = filepath
+                                                        .extension()
+                                                        .map(|s| {
+                                                            format!(".{}", s.to_string_lossy())
+                                                        })
+                                                        .unwrap_or_default();
+
+                                                    loop {
+                                                        let new_filepath = Path::new(&format!(
+                                                            "{base_name} ({count}){extension}",
+                                                        ))
+                                                        .to_path_buf();
+                                                        if new_filepath.exists() {
+                                                            count += 1;
+                                                        } else {
+                                                            break new_filepath;
+                                                        }
+                                                    }
+                                                } else {
+                                                    filepath
+                                                }
+                                            })
+                                            .unwrap();
+                                            peer_stream.write_u64_le(offset).await.unwrap();
+
+                                            loop {
+                                                sleep(Duration::from_nanos(1)).await;
+                                                let mut buf = vec![
+                                                    0;
+                                                    std::cmp::min(
+                                                        (filesize - downloaded) as usize,
+                                                        CHUNK_SIZE,
+                                                    )
+                                                ];
+                                                {
+                                                    *download_status.write().await =
+                                                        DownloadStatus::Downloading;
+                                                }
+                                                match peer_stream.read_exact(&mut buf).await {
+                                                    Ok(n) => {
+                                                        downloaded += n as u64;
+                                                        file_handle.write_all(&buf).unwrap();
+                                                        if downloaded == filesize {
+                                                            log(format!(
                                                             "finished downloading {file_handle:?}"
                                                         ));
-                                                        {
-                                                            *download_status.write().await =
-                                                                DownloadStatus::Complete;
+                                                            {
+                                                                *download_status.write().await =
+                                                                    DownloadStatus::Complete;
 
-                                                            *download_percentage.write().await =
-                                                                Percentage(100);
+                                                                *download_percentage
+                                                                    .write()
+                                                                    .await = Percentage(100);
+                                                            }
+                                                            break;
                                                         }
+                                                        let new_percentge =
+                                                            ((downloaded * 100) / filesize) as u8;
+                                                        if new_percentge != percentage {
+                                                            {
+                                                                *download_percentage
+                                                                    .write()
+                                                                    .await =
+                                                                    Percentage(new_percentge);
+                                                            }
+                                                            percentage = new_percentge;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        log(format!("stopped downloading {file_handle:?} due to {e:?}"));
+                                                        *download_status.write().await =
+                                                            DownloadStatus::Failed;
                                                         break;
                                                     }
-                                                    let new_percentge =
-                                                        ((downloaded * 100) / filesize) as u8;
-                                                    if new_percentge != percentage {
-                                                        {
-                                                            *download_percentage.write().await =
-                                                                Percentage(new_percentge);
+                                                }
+                                            }
+                                            file_handle.flush().unwrap();
+                                            let _ = peer_stream.shutdown().await;
+                                            return;
+                                        }
+                                        ConnectionTypes::PeerToPeer => {
+                                            currently_connected
+                                                .write()
+                                                .await
+                                                .insert(username.clone());
+
+                                            if let Some(messages) =
+                                                temp_token_message_map.lock().await.remove(&token)
+                                            {
+                                                for message in messages {
+                                                    log(format!(
+                                                        "sent to {token} {username}: {message:?}"
+                                                    ));
+                                                    peer_stream.write_all(&message).await.unwrap();
+                                                }
+                                            }
+
+                                            loop {
+                                                sleep(Duration::from_nanos(1)).await;
+                                                let data = get_code_and_bytes_from_readable(
+                                                    &mut peer_stream,
+                                                    match connection_type {
+                                                        ConnectionTypes::PeerToPeer => {
+                                                            MessageType::Peer(0)
                                                         }
-                                                        percentage = new_percentge;
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    log(format!("stopped downloading {file_handle:?} due to {e:?}"));
-                                                    *download_status.write().await =
-                                                        DownloadStatus::Failed;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        file_handle.flush().unwrap();
-                                        let _ = peer_stream.shutdown().await;
-                                        return;
-                                    } else {
-                                        if let Some(messages) =
-                                            temp_token_message_map.lock().await.remove(&token)
-                                        {
-                                            for message in messages {
-                                                log(format!("sent to {token} {username}: {message:?}"));
-                                                peer_stream.write_all(&message).await.unwrap();
-                                            }
-                                        }
+                                                        ConnectionTypes::FileTransfer => {
+                                                            unreachable!()
+                                                        }
+                                                        ConnectionTypes::DistributedNetwork => {
+                                                            MessageType::Distributed(0)
+                                                        }
+                                                    },
+                                                )
+                                                .await;
 
-                                        loop {
-                                            sleep(Duration::from_nanos(1)).await;
-                                            let data = get_code_and_bytes_from_readable(
-                                                &mut peer_stream,
-                                                match connection_type {
-                                                    ConnectionTypes::PeerToPeer => {
-                                                        MessageType::Peer(0)
-                                                    }
-                                                    ConnectionTypes::FileTransfer => {
-                                                        unreachable!()
-                                                    }
-                                                    ConnectionTypes::DistributedNetwork => {
-                                                        MessageType::Distributed(0)
-                                                    }
-                                                },
-                                            )
-                                            .await;
-
-                                            match data {
-                                                Ok((code, mut bytes)) => {
-                                                    match code {
+                                                match data {
+                                                    Ok((code, mut bytes)) => {
+                                                        match code {
                                                         MessageType::Peer(4) => {
                                                             if SharedFileListRequest::from_stream(
                                                                 &mut bytes,
@@ -1196,8 +1294,8 @@ async fn handle_client(
                                                                 )
                                                             {
                                                                 // loop {
-                                                                    // println!("{response:?}");
-                                                                    // TODO: UI events for SharedFileListResponse
+                                                                // println!("{response:?}");
+                                                                // TODO: UI events for SharedFileListResponse
                                                                 // }
                                                             }
                                                         }
@@ -1398,23 +1496,24 @@ async fn handle_client(
                                                             )
                                                         }
                                                     }
-                                                }
-                                                Err(e) => {
-                                                    log(format!(
+                                                    }
+                                                    Err(e) => {
+                                                        log(format!(
                                                         "got error {e:?} from username {username}"
                                                     ));
-                                                    break;
+                                                        break;
+                                                    }
                                                 }
+                                                // loops once only unless explicitly continued
+                                                // done this way to avoid long timeouts stalling peer activity
+                                                break;
                                             }
-                                            // loops once only unless explicitly continued
-                                            // done this way to avoid long timeouts stalling peer activity
-                                            // TODO: allow for more queued messages to be passed to existing connections
-                                            // perhaps by chaning token_message_map to have a value of Vec<Vec<u8>> (multiple messages as bytes)
-                                            break;
+                                            let _ = peer_stream.shutdown().await;
+                                            // log(format!("shut down {username} in task {task_num}"));
+                                            currently_connected.write().await.remove(&username);
                                         }
-                                        let _ = peer_stream.shutdown().await;
-                                        // log(format!("shut down {username} in task {task_num}"));
-                                    }
+                                        ConnectionTypes::DistributedNetwork => todo!(),
+                                    };
                                 }
                             });
                         }
