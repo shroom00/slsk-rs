@@ -366,6 +366,30 @@ impl DiskIndex {
         Ok(file_list)
     }
 
+    pub(crate) async fn aliased_to_real(
+        &self,
+        aliased: &str,
+    ) -> Result<Option<PathBuf>, sqlx::Error> {
+        match aliased.rsplit_once('\\') {
+            Some((folder, base)) => {
+                let (alias, non_alias) = match folder.split_once('\\') {
+                    Some(result) => result,
+                    None => return Ok(None),
+                };
+                let mut real_path = self.alias_to_path.get(alias).unwrap().to_owned();
+                real_path.push(non_alias);
+                real_path.push(base);
+
+                if real_path.exists() {
+                    Ok(Some(real_path))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Search for files by filename or terms
     /// Returns a list of files and private files, along with their actual paths
     pub(crate) async fn search(
@@ -377,7 +401,7 @@ impl DiskIndex {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let placeholders: Vec<String> = terms.iter().map(|_| "?".to_string()).collect();
+        let placeholders = vec![String::from("?"); terms.len()];
         let in_clause = format!("({})", placeholders.join(", "));
 
         let sql = format!(

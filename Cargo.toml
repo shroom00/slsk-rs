@@ -1,6 +1,6 @@
 [package]
 name = "slsk-rs"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,7 +23,7 @@ smol = "1.3.0"
 socket2 = "0.5.4"
 sqlx = { version = "0.8.6", features = ["runtime-async-std", "sqlite"] }
 textwrap = "0.16.0"
-tokio = {version = "1.33.0", features = ["net", "macros", "sync", "rt-multi-thread", "io-util", "time"]}
+tokio = {version = "1.33.0", features = ["net", "macros", "sync", "rt-multi-thread", "io-util", "time", "fs"]}
 toml = "0.8.23"
 tui-input = "0.8.0"
 tui-menu = "0.1.1"

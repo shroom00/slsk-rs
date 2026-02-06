@@ -9,6 +9,7 @@ That's the plan anyway.
         Create the other windows
         <br>
         <ul>
+            <li>Fix legacy folder downloads/queueing (Seeker)
             <li>File upload</li>
             <li>Private messages</li>
             <li>Settings</li>
