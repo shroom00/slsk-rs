@@ -110,6 +110,7 @@ impl UnpackFromBytes for ConnectionTypes {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum FileAttributeTypes {
     /// Kbps

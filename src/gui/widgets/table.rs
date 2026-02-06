@@ -565,7 +565,7 @@ impl TableWidget<'_> {
         self.set_length();
     }
 
-    fn make_headers(&self) -> Vec<Text> {
+    fn make_headers(&self) -> Vec<Text<'_>> {
         match self.sort {
             Some((i, order)) => {
                 let mut headers: Vec<Text> = self
@@ -633,7 +633,7 @@ impl TableWidget<'_> {
         }
     }
 
-    fn rows(&self, offset: u16, height: u16) -> Vec<Row> {
+    fn rows(&'_ self, offset: u16, height: u16) -> Vec<Row<'_>> {
         let mut current_row = 0u16;
         let mut rows = Vec::new();
         let mut stack = Vec::new();

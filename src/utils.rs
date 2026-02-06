@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::Write, path::Path};
+use std::{fs::OpenOptions, io::{ErrorKind, Write}, path::Path};
 
 use byte_unit::Byte;
 use chrono::Local;
@@ -12,8 +12,9 @@ use ratatui::{
     widgets::{Block, Paragraph, Tabs},
 };
 use socket2::TcpKeepalive;
+use tokio::io::AsyncReadExt;
 
-use crate::table::TableWidget;
+use crate::{SLSKExitCode, messages::MessageType, table::TableWidget, UnpackFromBytes};
 
 #[allow(dead_code)]
 pub(crate) fn latin1_to_string(s: &[u8]) -> String {
@@ -241,4 +242,57 @@ pub(crate) fn file_is_hidden(path: &Path) -> bool {
         };
     }
     false
+}
+
+// TODO: Make this use chunks + change usage to account for this. (?)
+pub(crate) async fn get_code_and_bytes_from_readable<R>(
+    reader: &mut R,
+    message_type: MessageType,
+) -> Result<(MessageType, Vec<u8>), SLSKExitCode>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let mut length: [u8; 4] = [0, 0, 0, 0];
+    match reader.read_exact(&mut length).await {
+        Ok(_) => (),
+        Err(e) => return Err(SLSKExitCode::IoError(e)),
+    }
+    let length = u32::from_le_bytes(length);
+    let mut bytes: Vec<u8> = vec![0; length as usize];
+
+    match reader.read_exact(&mut bytes).await {
+        Ok(_) => (),
+        Err(e) => return Err(SLSKExitCode::IoError(e)),
+    }
+    Ok(match message_type {
+        MessageType::Server(_) => (
+            MessageType::Server(match <u32>::unpack_from_bytes(&mut bytes) {
+                Some(n) => n,
+                None => return Err(SLSKExitCode::IoError(std::io::Error::from(ErrorKind::InvalidData))),
+            }),
+            bytes,
+        ),
+        MessageType::PeerInit(_) => (
+            MessageType::PeerInit(match <u8>::unpack_from_bytes(&mut bytes) {
+                Some(n) => n,
+                None => return Err(SLSKExitCode::IoError(std::io::Error::from(ErrorKind::InvalidData))),
+            }),
+            bytes,
+        ),
+        MessageType::Peer(_) => (
+            MessageType::Peer(match <u32>::unpack_from_bytes(&mut bytes) {
+                Some(n) => n,
+                None => return Err(SLSKExitCode::IoError(std::io::Error::from(ErrorKind::InvalidData))),
+            }),
+            bytes,
+        ),
+        MessageType::File => unimplemented!(),
+        MessageType::Distributed(_) => (
+            MessageType::Distributed(match <u8>::unpack_from_bytes(&mut bytes) {
+                Some(n) => n,
+                None => return Err(SLSKExitCode::IoError(std::io::Error::from(ErrorKind::InvalidData))),
+            }),
+            bytes,
+        ),
+    })
 }

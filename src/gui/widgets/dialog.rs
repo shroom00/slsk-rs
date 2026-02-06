@@ -14,9 +14,7 @@ use tokio::sync::broadcast::Sender;
 use crate::{
     events::SLSKEvents,
     gui::{
-        widgets::{
-            button::Button,
-        },
+        widgets::button::Button,
         windows::{FocusableWidget, SLSKWidget, WidgetWithHints, Window},
     },
     styles::STYLE_DEFAULT,
@@ -47,16 +45,16 @@ where
         block: Block<'a>,
         style: Style,
         yes_func: Rc<
-            (dyn for<'b> Fn(
-                &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
-                (Sender<SLSKEvents>, Args),
-            ) + 'static),
+            dyn for<'b> Fn(
+                    &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
+                    (Sender<SLSKEvents>, Args),
+                ) + 'static,
         >,
         no_func: Rc<
-            (dyn for<'b> Fn(
-                &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
-                (Sender<SLSKEvents>, Args),
-            ) + 'static),
+            dyn for<'b> Fn(
+                    &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
+                    (Sender<SLSKEvents>, Args),
+                ) + 'static,
         >,
     ) -> Self {
         let yes_button = Button {
@@ -158,8 +156,8 @@ where
                 question: question_paragraph,
                 ..
             } => {
-                *question_paragraph = Paragraph::new(Text::styled(question, self.style))
-                    .alignment(Alignment::Center);
+                *question_paragraph =
+                    Paragraph::new(Text::styled(question, self.style)).alignment(Alignment::Center);
             }
             DialogType::Options(_) => (),
         }
@@ -168,18 +166,18 @@ where
         &mut self,
         yes_func: Option<
             Rc<
-                (dyn for<'b> Fn(
-                    &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
-                    (Sender<SLSKEvents>, Args),
-                ) + 'static),
+                dyn for<'b> Fn(
+                        &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
+                        (Sender<SLSKEvents>, Args),
+                    ) + 'static,
             >,
         >,
         no_func: Option<
             Rc<
-                (dyn for<'b> Fn(
-                    &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
-                    (Sender<SLSKEvents>, Args),
-                ) + 'static),
+                dyn for<'b> Fn(
+                        &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
+                        (Sender<SLSKEvents>, Args),
+                    ) + 'static,
             >,
         >,
     ) -> Self {
@@ -210,16 +208,16 @@ where
         block: Block<'a>,
         style: Style,
         yes_func: Rc<
-            (dyn for<'b> Fn(
-                &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
-                (Sender<SLSKEvents>, Args),
-            ) + 'static),
+            dyn for<'b> Fn(
+                    &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
+                    (Sender<SLSKEvents>, Args),
+                ) + 'static,
         >,
         no_func: Rc<
-            (dyn for<'b> Fn(
-                &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
-                (Sender<SLSKEvents>, Args),
-            ) + 'static),
+            dyn for<'b> Fn(
+                    &'b Button<'_, (Sender<SLSKEvents>, Args), ()>,
+                    (Sender<SLSKEvents>, Args),
+                ) + 'static,
         >,
     ) -> Self {
         Self {
